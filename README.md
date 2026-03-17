@@ -1,3 +1,6 @@
+⚠️⚠️⚠️请谨慎使用该项目，纯ai来的，只是为了满足项目的推进⚠️⚠️⚠️
+
+
 # Bunker Mini 导航系统完整指南
 
 Bunker Mini 机器人 + RPLIDAR A1 激光雷达 + Linorobot2 导航框架

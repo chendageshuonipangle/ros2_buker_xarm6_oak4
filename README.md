@@ -1,6 +1,9 @@
 ⚠️⚠️⚠️请谨慎使用该项目，纯ai来的，只是为了满足项目功能的推进，只在实验室跑起来ok⚠️⚠️⚠️
 
-
+#单独编译安装时请先移除buker_ros2和ugv_sdk和xarm6_ros2的包以免编译报错然后红温，因为这两个相对需要的依赖和内容复杂
+#请使用完成对依赖的更新，以确保上述包的正常编译
+rosdep update
+rosdep install --from-paths . --ignore-src --rosdistro $ROS_DISTRO -y
 # Bunker Mini 导航系统完整指南
 
 Bunker Mini 机器人 + RPLIDAR A1 激光雷达 + Linorobot2 导航框架

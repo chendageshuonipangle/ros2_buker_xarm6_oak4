@@ -8,8 +8,8 @@
 
 ## 环境要求
 
-- Ubuntu 22.04
-- ROS2 Humble
+- Ubuntu 24.04
+- ROS2 jazzy
 - Python 3.10+
 - 硬件：Bunker Mini（CAN 总线连接）、RPLIDAR A1、xArm6、OAK-D 相机
 

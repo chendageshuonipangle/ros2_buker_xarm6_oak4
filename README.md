@@ -1,16 +1,34 @@
 # ROS2 Bunker Mini 导航 + xArm6 视觉抓取系统
 
-本项目集成了两个子系统：
+---
+
+> ## ⚠️ 严重警告
+>
+> **机械臂控制与移动底盘导航绝对不可融为一体运行。**
+>
+> 两套系统在硬件资源、实时性要求、安全边界上存在根本性冲突：
+> - 导航系统占用底盘全部运动控制权，机械臂同步运动将导致重心失稳、碰撞或硬件损毁
+> - 两套 MoveIt2 / Nav2 实例共享 TF 树时存在不可预测的坐标系竞争
+> - 任何"联合运动"尝试均可能造成人员伤害或设备永久损坏
+>
+> **本项目中"联合启动"仅指同时上电与话题可见，绝非允许同步运动。**
+> **禁止在导航行进过程中操作机械臂，禁止在机械臂运动过程中发送导航目标。**
+> **此警告没有例外，没有商量余地。**
+
+---
+
+本项目集成了三个子系统：
 1. **Bunker Mini 移动机器人**：基于 RPLIDAR A1 + Nav2 的自主导航，支持 SLAM 建图与自定义路径规划算法
 2. **xArm6 机械臂视觉抓取**：基于 OAK 相机 YOLO 目标检测 + MoveIt2 的全自动抓取
+3. **联合启动**：小车与机械臂共享统一 TF 树，可同时运行
 
 ---
 
 ## 环境要求
 
 - Ubuntu 24.04
-- ROS2 jazzy
-- Python 3.10+
+- ROS2 Jazzy
+- Python 3.12+
 - 硬件：Bunker Mini（CAN 总线连接）、RPLIDAR A1、xArm6、OAK-D 相机
 
 ---
@@ -20,21 +38,33 @@
 ### 1. 克隆仓库
 
 ```bash
-git clone <your-repo-url> ~/ros2_ws
-cd ~/ros2_ws
+git clone <your-repo-url> ~/ros2_buker_xarm6_oak4
+cd ~/ros2_buker_xarm6_oak4
 ```
 
-### 2. 安装依赖
-
-> **注意**：`bunker_ros2`、`ugv_sdk`、`xarm_ros2` 依赖较复杂，建议先单独编译其余包，再编译这三个包。
+### 2. 初始化 xArm SDK 子模块
 
 ```bash
-cd ~/ros2_ws
-rosdep update
-rosdep install --from-paths src --ignore-src --rosdistro $ROS_DISTRO -y
+cd src/xarm_ros2
+git submodule update --init --recursive
+# 若子模块 remote 指向错误，手动修复：
+cd xarm_sdk/cxx
+git remote set-url origin https://github.com/xArm-Developer/xArm-CPLUS-SDK.git
+git fetch origin && git checkout master
+cd ../../../..
 ```
 
-### 3. 配置环境变量
+### 3. 安装系统依赖
+
+```bash
+sudo apt-get install -y \
+    libasio-dev \
+    ros-jazzy-ros2-control \
+    ros-jazzy-ros2-controllers \
+    ros-jazzy-moveit
+```
+
+### 4. 配置环境变量
 
 在 `~/.bashrc` 中添加：
 
@@ -47,12 +77,72 @@ export LINOROBOT2_LASER_SENSOR=rplidar
 source ~/.bashrc
 ```
 
-### 4. 编译
+### 5. 编译
 
 ```bash
-cd ~/ros2_ws
+cd ~/ros2_buker_xarm6_oak4
+source /opt/ros/jazzy/setup.bash
 colcon build
 source install/setup.bash
+```
+
+---
+
+## 子系统三：小车 + 机械臂联合启动
+
+### TF 树结构
+
+项目通过统一的 `bunker_with_xarm6.urdf.xacro` 合并了小车和机械臂的 TF 树，只启动一个 `robot_state_publisher`，避免 `base_link` 冲突：
+
+```
+odom
+  └── base_link              ← bunker_base_node 发布里程计
+        ├── left_wheel_link
+        ├── right_wheel_link
+        ├── laser
+        ├── imu_link
+        └── xarm6_link0      ← fixed joint，挂载点 (0, 0, 0.16)
+              └── link1 → link2 → link3 → link4 → link5 → link6
+```
+
+### 仿真模式（WSL2 / 无硬件）
+
+```bash
+source ~/ros2_buker_xarm6_oak4/install/setup.bash
+
+# 一键启动小车 + xArm6 fake 控制器 + MoveIt2
+ros2 launch bunker_xarm6_description combined_bringup.launch.py
+```
+
+可选参数：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `port_name` | `can0` | CAN 总线端口 |
+| `is_bunker_mini` | `true` | 是否为 Bunker Mini |
+| `rviz` | `false` | 是否启动 RViz |
+| `add_gripper` | `false` | 是否添加夹爪 |
+
+```bash
+# 示例：启动并打开 RViz，带夹爪
+ros2 launch bunker_xarm6_description combined_bringup.launch.py \
+    rviz:=true add_gripper:=true
+```
+
+### 实机模式
+
+```bash
+# 终端 1：联合启动（小车底盘 + xArm6 MoveIt2）
+ros2 launch bunker_xarm6_description combined_bringup.launch.py \
+    port_name:=can0 is_bunker_mini:=true
+
+# 终端 2：导航
+./start_bunker_navigation.sh slam_nav
+
+# 终端 3：视觉抓取
+ros2 run oak_yolo_py oak_yolo_node
+ros2 launch oaktf_trantoarm transform.launch.py target_label:=orange
+ros2 run armtodeprition motion_planner_node
 ```
 
 ---
@@ -73,7 +163,7 @@ source install/setup.bash
 ### 快速启动
 
 ```bash
-cd ~/ros2_ws
+cd ~/ros2_buker_xarm6_oak4
 ./start_bunker_navigation.sh bringup
 ```
 
@@ -261,7 +351,7 @@ python3 solve_oak_xarm_handeye.py --npz chessboard_xarm_calib_points.npz
 
 ```bash
 # 手动初始化
-cd ~/ros2_ws/src/ugv_sdk/scripts/
+cd ~/ros2_buker_xarm6_oak4/src/ugv_sdk/scripts/
 bash bringup_can2usb_500k.bash
 
 # 验证
@@ -303,7 +393,7 @@ ros2 run tf2_tools view_frames          # TF 树
 ## 文件结构
 
 ```
-ros2_ws/
+ros2_buker_xarm6_oak4/
 ├── start_bunker_navigation.sh
 ├── maps/
 └── src/

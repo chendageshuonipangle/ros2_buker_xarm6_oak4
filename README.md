@@ -20,7 +20,6 @@
 本项目集成了三个子系统：
 1. **Bunker Mini 移动机器人**：基于 RPLIDAR A1 + Nav2 的自主导航，支持 SLAM 建图与自定义路径规划算法
 2. **xArm6 机械臂视觉抓取**：基于 OAK 相机 YOLO 目标检测 + MoveIt2 的全自动抓取
-3. **联合启动**：小车与机械臂共享统一 TF 树，可同时运行
 
 ---
 
@@ -88,22 +87,7 @@ source install/setup.bash
 
 ---
 
-## 子系统三：小车 + 机械臂联合启动
 
-### TF 树结构
-
-项目通过统一的 `bunker_with_xarm6.urdf.xacro` 合并了小车和机械臂的 TF 树，只启动一个 `robot_state_publisher`，避免 `base_link` 冲突：
-
-```
-odom
-  └── base_link              ← bunker_base_node 发布里程计
-        ├── left_wheel_link
-        ├── right_wheel_link
-        ├── laser
-        ├── imu_link
-        └── xarm6_link0      ← fixed joint，挂载点 (0, 0, 0.16)
-              └── link1 → link2 → link3 → link4 → link5 → link6
-```
 
 ### 仿真模式（WSL2 / 无硬件）
 

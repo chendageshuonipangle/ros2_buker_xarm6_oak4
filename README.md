@@ -11,8 +11,7 @@
 > - 两套 MoveIt2 / Nav2 实例共享 TF 树时存在不可预测的坐标系竞争
 > - 任何"联合运动"尝试均可能造成人员伤害或设备永久损坏
 >
-> **本项目中"联合启动"仅指同时上电与话题可见，绝非允许同步运动。**
-> **禁止在导航行进过程中操作机械臂，禁止在机械臂运动过程中发送导航目标。**
+ > **禁止在导航行进过程中操作机械臂，禁止在机械臂运动过程中发送导航目标。**
 > **此警告没有例外，没有商量余地。**
 
 ---
@@ -83,50 +82,6 @@ cd ~/ros2_buker_xarm6_oak4
 source /opt/ros/jazzy/setup.bash
 colcon build
 source install/setup.bash
-```
-
----
-
-
-
-### 仿真模式（WSL2 / 无硬件）
-
-```bash
-source ~/ros2_buker_xarm6_oak4/install/setup.bash
-
-# 一键启动小车 + xArm6 fake 控制器 + MoveIt2
-ros2 launch bunker_xarm6_description combined_bringup.launch.py
-```
-
-可选参数：
-
-| 参数 | 默认值 | 说明 |
-|------|--------|------|
-| `port_name` | `can0` | CAN 总线端口 |
-| `is_bunker_mini` | `true` | 是否为 Bunker Mini |
-| `rviz` | `false` | 是否启动 RViz |
-| `add_gripper` | `false` | 是否添加夹爪 |
-
-```bash
-# 示例：启动并打开 RViz，带夹爪
-ros2 launch bunker_xarm6_description combined_bringup.launch.py \
-    rviz:=true add_gripper:=true
-```
-
-### 实机模式
-
-```bash
-# 终端 1：联合启动（小车底盘 + xArm6 MoveIt2）
-ros2 launch bunker_xarm6_description combined_bringup.launch.py \
-    port_name:=can0 is_bunker_mini:=true
-
-# 终端 2：导航
-./start_bunker_navigation.sh slam_nav
-
-# 终端 3：视觉抓取
-ros2 run oak_yolo_py oak_yolo_node
-ros2 launch oaktf_trantoarm transform.launch.py target_label:=orange
-ros2 run armtodeprition motion_planner_node
 ```
 
 ---

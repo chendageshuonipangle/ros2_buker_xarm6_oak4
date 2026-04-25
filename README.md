@@ -119,6 +119,7 @@ cd ~/ros2_buker_xarm6_oak4
 
 ```bash
 # 终端 1：启动硬件
+sudo chmod a+rw /dev/ttyUSB0
 ./start_bunker_navigation.sh bringup
 
 # 终端 2：SLAM 建图

@@ -11,7 +11,10 @@ setup(
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         # Install model archive so it is available from the package share directory
-        ('share/' + package_name + '/models', ['oak_yolo_py/yolo11m.rvc4.tar.xz']),
+        ('share/' + package_name + '/models', [
+            'oak_yolo_py/best.rvc4.tar.xz',
+            'oak_yolo_py/yolov8l-pose.rvc4.tar.xz',
+        ]),
     ],
     install_requires=['setuptools'],
     zip_safe=True,

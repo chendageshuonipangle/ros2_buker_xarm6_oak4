@@ -42,11 +42,21 @@ def generate_launch_description():
         [FindPackageShare('linorobot2_navigation'), 'config', 'navigation.yaml']
     )
 
+    nav2_config_lite_path = PathJoinSubstitution(
+        [FindPackageShare('linorobot2_navigation'), 'config', 'navigation_lite.yaml']
+    )
+
     return LaunchDescription([
         DeclareLaunchArgument(
             name='sim', 
             default_value='false',
             description='Enable use_sime_time to true'
+        ),
+
+        DeclareLaunchArgument(
+            name='params_file',
+            default_value=nav2_config_path,
+            description='Full path to the Nav2 parameters file'
         ),
 
         DeclareLaunchArgument(
@@ -84,7 +94,7 @@ def generate_launch_description():
             launch_arguments={
                 'map': LaunchConfiguration("map"),
                 'use_sim_time': LaunchConfiguration("sim"),
-                'params_file': nav2_config_path,
+                'params_file': LaunchConfiguration("params_file"),
                 'initial_pose_x': LaunchConfiguration('initial_pose_x'),
                 'initial_pose_y': LaunchConfiguration('initial_pose_y'),
                 'initial_pose_yaw': LaunchConfiguration('initial_pose_yaw')

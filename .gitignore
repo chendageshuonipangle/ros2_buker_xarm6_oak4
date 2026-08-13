@@ -3,3 +3,12 @@ install/
 log/
 .vscode/
 .cache/
+
+# 大体积模型：超过 GitHub 50MB 建议上限，且当前管线未使用。
+# 抓取用的是 best_ckpt.rvc2.tar.xz (8.2MB)，保留在仓库内。
+src/oak_yolo_py/oak_yolo_py/yolo_world_v2_l_obj_640_480_int8.rvc4.tar.xz
+src/oak_yolo_py/oak_yolo_py/yolov8l-pose.rvc4.tar.xz
+
+# 采集会话与标定原始数据（体积大且属于本机现场数据）
+oak_handeye/
+*.npz

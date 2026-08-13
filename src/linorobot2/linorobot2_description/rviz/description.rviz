@@ -12,6 +12,9 @@ Panels:
         - /LaserScan1
         - /Map1
         - /Map1/Update Topic1
+        - /Path2
+        - /MarkerArray1
+        - /PointStamped1
       Splitter Ratio: 0.5
     Tree Height: 772
 Visualization Manager:
@@ -58,26 +61,92 @@ Visualization Manager:
           Show Axes: false
           Show Trail: false
           Value: true
-        front_marker:
+        gyro_link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        imu_link:
-          Alpha: 1
-          Show Axes: false
-          Show Trail: false
         laser:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        left_wheel_link:
+        wheel1.1_Link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
           Value: true
-        right_wheel_link:
+        wheel1.2_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel1.3_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel1_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel2.1_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel2.2_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel2.3_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel2_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel3.1_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel3.2_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel3.3_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel3_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel4.1_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel4.2_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel4.3_Link:
+          Alpha: 1
+          Show Axes: false
+          Show Trail: false
+          Value: true
+        wheel4_Link:
           Alpha: 1
           Show Axes: false
           Show Trail: false
@@ -99,17 +168,45 @@ Visualization Manager:
         All Enabled: true
         base_link:
           Value: true
-        front_marker:
-          Value: true
-        imu_link:
+        gyro_link:
           Value: true
         laser:
           Value: true
-        left_wheel_link:
+        map:
           Value: true
         odom:
           Value: true
-        right_wheel_link:
+        wheel1.1_Link:
+          Value: true
+        wheel1.2_Link:
+          Value: true
+        wheel1.3_Link:
+          Value: true
+        wheel1_Link:
+          Value: true
+        wheel2.1_Link:
+          Value: true
+        wheel2.2_Link:
+          Value: true
+        wheel2.3_Link:
+          Value: true
+        wheel2_Link:
+          Value: true
+        wheel3.1_Link:
+          Value: true
+        wheel3.2_Link:
+          Value: true
+        wheel3.3_Link:
+          Value: true
+        wheel3_Link:
+          Value: true
+        wheel4.1_Link:
+          Value: true
+        wheel4.2_Link:
+          Value: true
+        wheel4.3_Link:
+          Value: true
+        wheel4_Link:
           Value: true
       Marker Scale: 0.30000001192092896
       Name: TF
@@ -117,18 +214,45 @@ Visualization Manager:
       Show Axes: true
       Show Names: false
       Tree:
-        odom:
-          base_link:
-            front_marker:
-              {}
-            imu_link:
-              {}
-            laser:
-              {}
-            left_wheel_link:
-              {}
-            right_wheel_link:
-              {}
+        map:
+          odom:
+            base_link:
+              gyro_link:
+                {}
+              laser:
+                {}
+              wheel1.1_Link:
+                {}
+              wheel1.2_Link:
+                {}
+              wheel1.3_Link:
+                {}
+              wheel1_Link:
+                {}
+              wheel2.1_Link:
+                {}
+              wheel2.2_Link:
+                {}
+              wheel2.3_Link:
+                {}
+              wheel2_Link:
+                {}
+              wheel3.1_Link:
+                {}
+              wheel3.2_Link:
+                {}
+              wheel3.3_Link:
+                {}
+              wheel3_Link:
+                {}
+              wheel4.1_Link:
+                {}
+              wheel4.2_Link:
+                {}
+              wheel4.3_Link:
+                {}
+              wheel4_Link:
+                {}
       Update Interval: 0
       Value: true
     - Alpha: 1
@@ -253,13 +377,13 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /global_costmap/costmap
+        Value: /global_costmap/static_layer
       Update Topic:
         Depth: 5
         Durability Policy: Volatile
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /global_costmap/costmap_updates
+        Value: /global_costmap/static_layer_updates
       Use Timestamp: false
       Value: true
     - Alpha: 1
@@ -293,13 +417,13 @@ Visualization Manager:
     - Alpha: 1
       Buffer Length: 1
       Class: rviz_default_plugins/Path
-      Color: 25; 255; 0
+      Color: 255; 0; 0
       Enabled: true
       Head Diameter: 0.30000001192092896
       Head Length: 0.20000000298023224
       Length: 0.30000001192092896
       Line Style: Lines
-      Line Width: 0.029999999329447746
+      Line Width: 0.07999999821186066
       Name: Path
       Offset:
         X: 0
@@ -316,40 +440,42 @@ Visualization Manager:
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /plan_smoothed
+        Value: /driven_path
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+
+      Enabled: true
+      Name: MarkerArray
+      Namespaces:
+        wp_line: true
+        wp_sphere: true
+        wp_text: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /waypoint_markers
       Value: true
     - Alpha: 1
-      Buffer Length: 1
-      Class: rviz_default_plugins/Path
-      Color: 25; 255; 0
+      Class: rviz_default_plugins/PointStamped
+      Color: 204; 41; 204
       Enabled: true
-      Head Diameter: 0.30000001192092896
-      Head Length: 0.20000000298023224
-      Length: 0.30000001192092896
-      Line Style: Lines
-      Line Width: 0.029999999329447746
-      Name: Path
-      Offset:
-        X: 0
-        Y: 0
-        Z: 0
-      Pose Color: 255; 85; 255
-      Pose Style: None
-      Radius: 0.029999999329447746
-      Shaft Diameter: 0.10000000149011612
-      Shaft Length: 0.10000000149011612
+      History Length: 25
+      Name: PointStamped
+      Radius: 0.20000000298023224
       Topic:
         Depth: 5
         Durability Policy: Volatile
         Filter size: 10
         History Policy: Keep Last
         Reliability Policy: Reliable
-        Value: /received_global_plan
+        Value: /clicked_point
       Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
-    Fixed Frame: base_link
+    Fixed Frame: map
     Frame Rate: 30
   Name: root
   Tools:
@@ -376,6 +502,14 @@ Visualization Manager:
         History Policy: Keep Last
         Reliability Policy: Reliable
         Value: goal_pose
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /clicked_point
   Transformation:
     Current:
       Class: rviz_default_plugins/TF
@@ -383,25 +517,25 @@ Visualization Manager:
   Views:
     Current:
       Class: rviz_default_plugins/Orbit
-      Distance: 7.660162925720215
+      Distance: 17.770418167114258
       Enable Stereo Rendering:
         Stereo Eye Separation: 0.05999999865889549
         Stereo Focal Distance: 1
         Swap Stereo Eyes: false
         Value: false
       Focal Point:
-        X: 0.32068291306495667
-        Y: 1.060036301612854
-        Z: 0.4327356815338135
+        X: 1.8189157247543335
+        Y: -1.1984643936157227
+        Z: 0.12969036400318146
       Focal Shape Fixed Size: true
       Focal Shape Size: 0.05000000074505806
       Invert Z Axis: false
       Name: Current View
       Near Clip Distance: 0.009999999776482582
-      Pitch: 0.25500020384788513
+      Pitch: 0.9299998879432678
       Target Frame: <Fixed Frame>
       Value: Orbit (rviz)
-      Yaw: 5.470006465911865
+      Yaw: 3.1900055408477783
     Saved: ~
 Window Geometry:
   Displays:
@@ -411,5 +545,5 @@ Window Geometry:
   Hide Right Dock: true
   QMainWindow State: 000000ff00000000fd0000000100000000000001560000038afc0200000001fb000000100044006900730070006c006100790073010000003f0000038a000000cc00ffffff000004800000038a00000004000000040000000800000008fc0000000100000002000000010000000a0054006f006f006c00730100000000ffffffff0000000000000000
   Width: 1500
-  X: 309
-  Y: 101
+  X: 324
+  Y: 96

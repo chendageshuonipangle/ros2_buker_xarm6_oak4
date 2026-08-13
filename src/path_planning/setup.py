@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'jps_planner_node = path_planning.jps_planner_node:main',
             'bunker_path_planner = path_planning.bunker_path_planner:main',
+            'frontier_explorer = path_planning.frontier_explorer_node:main',
         ],
     },
 )

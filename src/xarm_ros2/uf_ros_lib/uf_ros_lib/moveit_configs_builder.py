@@ -254,11 +254,21 @@ class MoveItConfigsBuilder(ParameterBuilder):
         ros2_control_plugin = get_param_str('ros2_control_plugin', 'uf_robot_hardware/UFRobotSystemHardware')
         ros2_control_params = get_param_str('ros2_control_params', '')
         add_gripper = get_param_str('add_gripper', False)
+        add_arc_gripper = get_param_str('add_arc_gripper', False)
+        arc_gripper_left_xyz = get_list_param_str('arc_gripper_left_xyz', '0.011717 -0.038337 0.058564')
+        arc_gripper_left_rpy = get_list_param_str('arc_gripper_left_rpy', '0 -1.5707963267948966 0')
+        arc_gripper_right_xyz = get_list_param_str('arc_gripper_right_xyz', '0.010000 0.096583 0.058564')
+        arc_gripper_right_rpy = get_list_param_str('arc_gripper_right_rpy', '0 -1.5707963267948966 0')
         add_vacuum_gripper = get_param_str('add_vacuum_gripper', False)
         add_bio_gripper = get_param_str('add_bio_gripper', False)
         add_realsense_d435i = get_param_str('add_realsense_d435i', False)
         add_d435i_links = get_param_str('add_d435i_links', True)
         use_gazebo_camera = get_param_str('use_gazebo_camera', False)
+        add_oak_d_sr = get_param_str('add_oak_d_sr', False)
+        add_oak_d_sr_camera_collision = get_param_str('add_oak_d_sr_camera_collision', False)
+        oak_d_sr_camera_xyz = get_list_param_str('oak_d_sr_camera_xyz', '0 0 0')
+        oak_d_sr_camera_rpy = get_list_param_str('oak_d_sr_camera_rpy', '0 0 0')
+        oak_d_sr_camera_safety_radius = get_param_str('oak_d_sr_camera_safety_radius', 0.065)
         add_other_geometry = get_param_str('add_other_geometry', False)
         geometry_type = get_param_str('geometry_type', 'box')
         geometry_mass = get_param_str('geometry_mass', 0.1)
@@ -301,11 +311,21 @@ class MoveItConfigsBuilder(ParameterBuilder):
             'ros2_control_plugin': ros2_control_plugin,
             'ros2_control_params': ros2_control_params,
             'add_gripper': add_gripper,
+            'add_arc_gripper': add_arc_gripper,
+            'arc_gripper_left_xyz': arc_gripper_left_xyz,
+            'arc_gripper_left_rpy': arc_gripper_left_rpy,
+            'arc_gripper_right_xyz': arc_gripper_right_xyz,
+            'arc_gripper_right_rpy': arc_gripper_right_rpy,
             'add_vacuum_gripper': add_vacuum_gripper,
             'add_bio_gripper': add_bio_gripper,
             'add_realsense_d435i': add_realsense_d435i,
             'add_d435i_links': add_d435i_links,
             'use_gazebo_camera': use_gazebo_camera,
+            'add_oak_d_sr': add_oak_d_sr,
+            'add_oak_d_sr_camera_collision': add_oak_d_sr_camera_collision,
+            'oak_d_sr_camera_xyz': oak_d_sr_camera_xyz,
+            'oak_d_sr_camera_rpy': oak_d_sr_camera_rpy,
+            'oak_d_sr_camera_safety_radius': oak_d_sr_camera_safety_radius,
             'add_other_geometry': add_other_geometry,
             'geometry_type': geometry_type,
             'geometry_mass': geometry_mass,
@@ -324,9 +344,12 @@ class MoveItConfigsBuilder(ParameterBuilder):
             'dof': dof,
             'robot_type': robot_type,
             'add_gripper': add_gripper,
+            'add_arc_gripper': add_arc_gripper,
             'add_vacuum_gripper': add_vacuum_gripper,
             'add_bio_gripper': add_bio_gripper,
             'add_other_geometry': add_other_geometry,
+            'add_oak_d_sr': add_oak_d_sr,
+            'add_oak_d_sr_camera_collision': add_oak_d_sr_camera_collision,
         }
 
         self.__urdf_package = Path(get_package_share_directory('xarm_description'))

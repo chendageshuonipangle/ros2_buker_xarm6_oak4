@@ -4,5 +4,5 @@
       name: angular_bounds
       type: laser_filters/LaserScanAngularBoundsFilter
       params:
-        lower_angle: -1.745
-        upper_angle: 1.745
+        lower_angle: -1.5708   # -90 deg, front only
+        upper_angle: 1.5708    # +90 deg, front only

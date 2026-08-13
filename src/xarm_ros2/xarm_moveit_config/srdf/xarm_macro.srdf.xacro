@@ -1,7 +1,8 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <robot xmlns:xacro="http://wiki.ros.org/xacro" name="xarm_srdf">
   <xacro:macro name="xarm_macro_srdf" params="prefix:='' dof:=7 robot_type:='xarm'
-    add_gripper:='false' add_vacuum_gripper:='false' add_bio_gripper:='false' add_other_geometry:='false' "> 
+    add_gripper:='false' add_arc_gripper:='false' add_vacuum_gripper:='false' add_bio_gripper:='false' add_other_geometry:='false'
+    add_oak_d_sr:='false' add_oak_d_sr_camera_collision:='false' "> 
     <xacro:if value="${dof == 5}">
       <xacro:include filename="$(find xarm_moveit_config)/srdf/_xarm5_macro.srdf.xacro" />
       <xacro:xarm5_macro_srdf prefix="${prefix}" 
@@ -11,7 +12,7 @@
       <xacro:if value="${robot_type == 'uf850'}">
         <xacro:include filename="$(find xarm_moveit_config)/srdf/_uf850_macro.srdf.xacro" />
         <xacro:uf850_macro_srdf prefix="${prefix}" 
-          add_gripper="${add_gripper}" add_vacuum_gripper="${add_vacuum_gripper}" add_bio_gripper="${add_bio_gripper}" add_other_geometry="${add_other_geometry}"  />
+          add_gripper="${add_gripper}" add_vacuum_gripper="${add_vacuum_gripper}" add_bio_gripper="${add_bio_gripper}" add_other_geometry="${add_other_geometry}" />
       </xacro:if>
       <xacro:if value="${robot_type == 'lite'}">
         <xacro:include filename="$(find xarm_moveit_config)/srdf/_lite6_macro.srdf.xacro" />
@@ -21,7 +22,8 @@
       <xacro:unless value="${robot_type == 'lite' or robot_type == 'uf850'}">
         <xacro:include filename="$(find xarm_moveit_config)/srdf/_xarm6_macro.srdf.xacro" />
         <xacro:xarm6_macro_srdf prefix="${prefix}" 
-          add_gripper="${add_gripper}" add_vacuum_gripper="${add_vacuum_gripper}" add_bio_gripper="${add_bio_gripper}" add_other_geometry="${add_other_geometry}"  />
+          add_gripper="${add_gripper}" add_arc_gripper="${add_arc_gripper}" add_vacuum_gripper="${add_vacuum_gripper}" add_bio_gripper="${add_bio_gripper}" add_other_geometry="${add_other_geometry}"
+          add_oak_d_sr="${add_oak_d_sr}" add_oak_d_sr_camera_collision="${add_oak_d_sr_camera_collision}" />
       </xacro:unless>
     </xacro:if>
     <xacro:unless value="${dof == 5 or dof == 6}">

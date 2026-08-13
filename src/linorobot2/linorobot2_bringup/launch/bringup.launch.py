@@ -50,6 +50,10 @@ def generate_launch_description():
         [FindPackageShare('linorobot2_bringup'), 'launch', 'bunker_robot.launch.py']
     )
 
+    bunker_robot_n10_launch_path = PathJoinSubstitution(
+        [FindPackageShare('linorobot2_bringup'), 'launch', 'bunker_robot_n10.launch.py']
+    )
+
     extra_launch_path = PathJoinSubstitution(
         [FindPackageShare('linorobot2_bringup'), 'launch', 'extra.launch.py']
     )
@@ -68,6 +72,12 @@ def generate_launch_description():
         ),
 
         DeclareLaunchArgument(
+            name='use_lslidar_n10',
+            default_value='false',
+            description='Use LSLIDAR N10 instead of RPLIDAR A1 for Bunker bringup'
+        ),
+
+        DeclareLaunchArgument(
             name='port_name',
             default_value='can0',
             description='CAN bus name for Bunker robot'
@@ -77,6 +87,12 @@ def generate_launch_description():
             name='is_bunker_mini',
             default_value='false',
             description='Set to true if using Bunker Mini'
+        ),
+
+        DeclareLaunchArgument(
+            name='use_yesense_imu',
+            default_value='true',
+            description='Launch YESENSE network IMU for Bunker bringup'
         ),
 
         DeclareLaunchArgument(
@@ -165,10 +181,33 @@ def generate_launch_description():
 
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(bunker_robot_launch_path),
-            condition=IfCondition(LaunchConfiguration("use_bunker")),
+            condition=IfCondition(
+                PythonExpression([
+                    "'", LaunchConfiguration("use_bunker"), "' == 'true'",
+                    " and ",
+                    "'", LaunchConfiguration("use_lslidar_n10"), "' != 'true'"
+                ])
+            ),
             launch_arguments={
                 'port_name': LaunchConfiguration("port_name"),
-                'is_bunker_mini': LaunchConfiguration("is_bunker_mini")
+                'is_bunker_mini': LaunchConfiguration("is_bunker_mini"),
+                'use_yesense_imu': LaunchConfiguration("use_yesense_imu")
+            }.items()
+        ),
+
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(bunker_robot_n10_launch_path),
+            condition=IfCondition(
+                PythonExpression([
+                    "'", LaunchConfiguration("use_bunker"), "' == 'true'",
+                    " and ",
+                    "'", LaunchConfiguration("use_lslidar_n10"), "' == 'true'"
+                ])
+            ),
+            launch_arguments={
+                'port_name': LaunchConfiguration("port_name"),
+                'is_bunker_mini': LaunchConfiguration("is_bunker_mini"),
+                'use_yesense_imu': LaunchConfiguration("use_yesense_imu")
             }.items()
         ),
 

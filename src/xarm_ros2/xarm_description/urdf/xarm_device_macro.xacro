@@ -7,6 +7,11 @@
     effort_control:=false 
     velocity_control:=false
     add_gripper:=false
+    add_arc_gripper:=false
+    arc_gripper_left_xyz:='0.011717 -0.038337 0.058564'
+    arc_gripper_left_rpy:='0 -1.5707963267948966 0'
+    arc_gripper_right_xyz:='0.010000 0.096583 0.058564'
+    arc_gripper_right_rpy:='0 -1.5707963267948966 0'
     add_vacuum_gripper:=false
     add_bio_gripper:=false
     dof:=7
@@ -22,6 +27,11 @@
     add_d435i_links:=true
     use_gazebo_camera:=false
     add_other_geometry:=false 
+    add_oak_d_sr:=false
+    add_oak_d_sr_camera_collision:=false
+    oak_d_sr_camera_xyz:='0 0 0'
+    oak_d_sr_camera_rpy:='0 0 0'
+    oak_d_sr_camera_safety_radius:='0.065'
     geometry_type:='box'
     geometry_mass:='0.1'
     geometry_radius:='0.1'
@@ -247,8 +257,22 @@
         <!-- Load XArm Gripper Model URDF -->
         <xacro:include filename="$(find xarm_description)/urdf/gripper/xarm_gripper_macro.xacro" />
         <xacro:xarm_gripper_macro prefix="${prefix}" attach_to="${prefix}link_eef" 
-          ros2_control_plugin="${ros2_control_plugin}" dof="${dof}" hard_interface="${hard_interface}" />
+          ros2_control_plugin="${ros2_control_plugin}" dof="${dof}" hard_interface="${hard_interface}"
+          replace_finger_meshes="${add_arc_gripper}" />
       </xacro:unless>
+    </xacro:if>
+
+    <!-- The custom arc jaws are rigidly mounted to the two moving factory fingers. -->
+    <xacro:if value="${add_gripper and add_arc_gripper and robot_type != 'lite'}">
+      <xacro:include filename="$(find xarm_description)/urdf/gripper/arc_gripper_jaws.urdf.xacro" />
+      <xacro:arc_gripper_jaws_urdf
+        prefix="${prefix}"
+        left_finger_link="${prefix}left_finger"
+        right_finger_link="${prefix}right_finger"
+        left_xyz="${arc_gripper_left_xyz}"
+        left_rpy="${arc_gripper_left_rpy}"
+        right_xyz="${arc_gripper_right_xyz}"
+        right_rpy="${arc_gripper_right_rpy}" />
     </xacro:if>
 
     <xacro:if value="${not add_gripper and add_bio_gripper}">
@@ -284,6 +308,18 @@
         geometry_mesh_origin_xyz="${geometry_mesh_origin_xyz}" geometry_mesh_origin_rpy="${geometry_mesh_origin_rpy}"
         geometry_mesh_tcp_xyz="${geometry_mesh_tcp_xyz}" geometry_mesh_tcp_rpy="${geometry_mesh_tcp_rpy}"
       />
+    </xacro:if>
+
+    <xacro:if value="${add_oak_d_sr}">
+      <xacro:include filename="$(find xarm_description)/urdf/camera/oak_d_sr_xarm6.urdf.xacro" />
+      <xacro:oak_d_sr_xarm6_urdf
+        prefix="${prefix}"
+        flange_link="${prefix}link_eef"
+        tcp_link="${prefix}link_tcp"
+        add_camera_collision="${add_oak_d_sr_camera_collision}"
+        camera_xyz="${oak_d_sr_camera_xyz}"
+        camera_rpy="${oak_d_sr_camera_rpy}"
+        camera_safety_radius="${oak_d_sr_camera_safety_radius}" />
     </xacro:if>
 
     <!-- gazebo_plugin -->

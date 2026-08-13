@@ -10,7 +10,8 @@
   <!-- CHAINS: When a chain is specified, all the links along the chain (including endpoints) are included in the group. Additionally, all the joints that are parents to included links are also included. This means that joints along the chain and the parent joint of the base link are included in the group -->
   <!-- SUBGROUPS: Groups can also be formed by referencing to already defined group names -->
   <xacro:macro name="xarm6_macro_srdf" params="prefix='' 
-    add_gripper='false' add_vacuum_gripper='false' add_bio_gripper='false' add_other_geometry='false' ">
+    add_gripper='false' add_arc_gripper='false' add_vacuum_gripper='false' add_bio_gripper='false' add_other_geometry='false'
+    add_oak_d_sr='false' add_oak_d_sr_camera_collision='false' ">
     <group name="${prefix}xarm6">
       <joint name="${prefix}world_joint" />
       <joint name="${prefix}joint1" />
@@ -66,6 +67,10 @@
         <link name="${prefix}right_inner_knuckle" />
         <link name="${prefix}right_outer_knuckle" />
         <link name="${prefix}right_finger" />
+        <xacro:if value="${add_arc_gripper}">
+          <link name="${prefix}arc_gripper_left_jaw_link" />
+          <link name="${prefix}arc_gripper_right_jaw_link" />
+        </xacro:if>
         <link name="${prefix}link_tcp" />
         <joint name="${prefix}drive_joint" />
       </group>
@@ -83,6 +88,13 @@
       <passive_joint name="${prefix}right_inner_knuckle_joint" />
       <passive_joint name="${prefix}right_outer_knuckle_joint" />
       <passive_joint name="${prefix}right_finger_joint" />
+      <xacro:if value="${add_arc_gripper}">
+        <passive_joint name="${prefix}arc_gripper_left_jaw_fix" />
+        <passive_joint name="${prefix}arc_gripper_right_jaw_fix" />
+        <disable_collisions link1="${prefix}arc_gripper_left_jaw_link" link2="${prefix}left_finger" reason="Adjacent" />
+        <disable_collisions link1="${prefix}arc_gripper_right_jaw_link" link2="${prefix}right_finger" reason="Adjacent" />
+        <disable_collisions link1="${prefix}arc_gripper_left_jaw_link" link2="${prefix}arc_gripper_right_jaw_link" reason="Never" />
+      </xacro:if>
       <!-- DISABLE COLLISIONS, By default it is assumed that any link of the robot could potentially come into collision with any other link in the robot. This tag disables collision checking between a specified pair of links. -->
       <disable_collisions link1="${prefix}left_finger" link2="${prefix}left_inner_knuckle" reason="Default" />
       <disable_collisions link1="${prefix}left_finger" link2="${prefix}left_outer_knuckle" reason="Adjacent" />
@@ -194,6 +206,24 @@
       <disable_collisions link1="${prefix}link5" link2="${prefix}other_geometry_link" reason="Never" />
       <disable_collisions link1="${prefix}link6" link2="${prefix}other_geometry_link" reason="Adjacent" />
       <disable_collisions link1="${prefix}link_eef" link2="${prefix}other_geometry_link" reason="Adjacent" />
+    </xacro:if>
+
+    <xacro:if value="${add_oak_d_sr}">
+      <passive_joint name="${prefix}oak_d_sr_mount_fix" />
+      <disable_collisions link1="${prefix}link6" link2="${prefix}oak_d_sr_mount_link" reason="Adjacent" />
+      <disable_collisions link1="${prefix}link_eef" link2="${prefix}oak_d_sr_mount_link" reason="Adjacent" />
+      <xacro:if value="${add_gripper}">
+        <disable_collisions link1="${prefix}xarm_gripper_base_link" link2="${prefix}oak_d_sr_mount_link" reason="Default" />
+      </xacro:if>
+      <xacro:if value="${add_oak_d_sr_camera_collision}">
+        <passive_joint name="${prefix}oak_d_sr_camera_fix" />
+        <disable_collisions link1="${prefix}link6" link2="${prefix}oak_rgb_camera_optical_frame" reason="Default" />
+        <disable_collisions link1="${prefix}link_eef" link2="${prefix}oak_rgb_camera_optical_frame" reason="Default" />
+        <xacro:if value="${add_gripper}">
+          <disable_collisions link1="${prefix}xarm_gripper_base_link" link2="${prefix}oak_rgb_camera_optical_frame" reason="Default" />
+          <disable_collisions link1="${prefix}link_tcp" link2="${prefix}oak_rgb_camera_optical_frame" reason="Adjacent" />
+        </xacro:if>
+      </xacro:if>
     </xacro:if>
 
     <disable_collisions link1="${prefix}link1" link2="${prefix}link2" reason="Adjacent" />

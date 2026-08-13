@@ -19,9 +19,14 @@
 
 ---
 
-本项目集成了三个子系统：
-1. **Bunker Mini 移动机器人**：基于 RPLIDAR A1 + Nav2 的自主导航，支持 SLAM 建图与自定义路径规划算法
-2. **xArm6 机械臂视觉抓取**：基于 OAK 相机 YOLO 目标检测 + MoveIt2 的全自动抓取
+本项目集成了两个子系统：
+1. **Bunker Mini 移动机器人**：基于 RPLIDAR A1 + Nav2 的自主导航，支持 SLAM 建图与自定义路径规划算法（`ROS_DOMAIN_ID=20`）
+2. **xArm6 机械臂视觉抓取**：OAK-D-SR 眼在手上标定 + NPU 目标检测 + MoveIt2 全自动抓取（`ROS_DOMAIN_ID=40`）
+
+两套系统用不同的 `ROS_DOMAIN_ID` 强制隔离，节点互相看不见，这是上面那条警告的
+技术保障手段。启动脚本已固化各自的 Domain，不要手动混用。
+
+运维细节、标定流程与故障排查见 [`Bunker_Mini_Navigation_Guide.md`](Bunker_Mini_Navigation_Guide.md)。
 
 ---
 
@@ -192,39 +197,76 @@ ros2 run teleop_twist_keyboard teleop_twist_keyboard
 ### 系统架构
 
 ```
-OAK 相机 (YOLO 检测)
+OAK-D-SR (RVC2 NPU 上跑 YOLOv6r2) + 立体深度
     → /oak_result (label, conf, x, y, z 单位 mm)
-        → oaktf_trantoarm (手眼标定坐标转换)
-            → /target_pose_in_base (基座坐标系, 单位 m)
+        → target_to_base (眼在手上外参 + TF 树)
+            → /target_pose_in_base (link_base 坐标系, 单位 m)
                 → armtodeprition (MoveIt2 运动规划 + 夹爪控制)
 ```
 
-### 启动步骤（YOLO 目标检测抓取）
+相机装在 xArm6 末端法兰（eye-in-hand），外参已标定并固化在
+`src/xarm_oak_handeye/config/eye_in_hand_result.json`，随包安装，无需每次重标。
+
+### 一键启动（推荐）
+
+```bash
+cd ~/ros2_ws
+./start_peach_grasp.sh check     # 七项环境自检
+./start_peach_grasp.sh vision    # 只看检测，机械臂不会动
+./start_peach_grasp.sh           # 全部启动，检测到稳定目标即自动抓取
+```
+
+脚本固定 `ROS_DOMAIN_ID=40`，按依赖顺序拉起 MoveIt2 → 手眼 TF + NPU 检测 →
+运动规划，每层等前一层就绪，Ctrl+C 一次退出全部。
+
+**默认是自动抓取**：预览窗口出现 `TARGET STABLE` 后就会动臂，启动前手要离开
+工作区。要逐次确认改成手动：
+
+```bash
+AUTO_EXECUTE=false ./start_peach_grasp.sh   # 主终端
+./start_peach_grasp.sh trigger              # 另开终端，触发一次
+./start_peach_grasp.sh status               # 查链路是否通、目标点是否在发布
+```
+
+常用参数（全部通过环境变量传入）：
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `AUTO_EXECUTE` | `true` | 自动抓取；`false` 改为手动 trigger |
+| `TARGET_LABEL` | `peach` | 目标类别 |
+| `CONFIDENCE` | `0.75` | 检测置信度阈值 |
+| `GRIPPER_CLOSE_DEG` | `42.0` | 夹爪闭合角度，满闭合 48.7 |
+| `MAX_DEPTH_MM` | `700` | 深度上限，掐掉远景误报 |
+
+重启前务必先清干净，否则两个规划节点会同时向 MoveIt 发轨迹，
+表现为全程 `CONTROL_FAILED`：
+
+```bash
+./start_peach_grasp.sh stop --with-moveit
+```
+
+完整说明（四层启动顺序、三道安全闸、抓取动作序列、故障排查、
+手眼标定复标流程）见 [`Bunker_Mini_Navigation_Guide.md`](Bunker_Mini_Navigation_Guide.md) 第 13、14 节。
+
+### 手动分步启动（调试用）
 
 ```bash
 # 终端 1：启动 xArm6 MoveIt2
 ros2 launch xarm_moveit_config xarm6_moveit_realmove.launch.py \
-    robot_ip:=192.168.1.242 add_gripper:=true
+    robot_ip:=192.168.1.242 add_gripper:=true add_oak_d_sr:=true
 
-# 终端 2：启动 OAK YOLO 检测
-ros2 run oak_yolo_py oak_yolo_node
+# 终端 2：手眼 TF + NPU 检测 + 坐标转换
+ros2 launch xarm_oak_handeye handeye_target_transform.launch.py \
+    target_label:=peach confidence:=0.75
 
-# 终端 3：启动坐标转换
-ros2 launch oaktf_trantoarm transform.launch.py target_label:=orange
+# 终端 3：运动规划
+ros2 launch armtodeprition motion_planner.launch.py auto_execute:=false
 
-# 终端 4：启动运动规划（全自动模式）
-ros2 run armtodeprition motion_planner_node
-```
-
-检测到目标后，机械臂自动执行抓取序列（间隔 3 秒防重复触发）。
-
-如需手动模式：
-
-```bash
-ros2 run armtodeprition motion_planner_node --ros-args -p auto_execute:=false
-# 手动触发
+# 终端 4：手动触发
 ros2 service call /execute_grasp std_srvs/srv/Trigger
 ```
+
+三个终端都需要先 `export ROS_DOMAIN_ID=40`，否则节点互相看不见。
 
 ### 启动步骤（棋盘格标定测试）
 
@@ -255,23 +297,43 @@ ros2 run armtodeprition motion_planner_node
 
 ### 工作范围限制
 
-| 方向 | 范围 |
+| 方向 | 默认范围 |
 |------|------|
-| 水平距离 | 0.15 m ~ 0.65 m |
-| Z 高度 | 0.05 m ~ 0.80 m |
+| X | 0.10 m ~ 0.80 m |
+| Y | -0.50 m ~ 0.50 m |
+| Z | 0.00 m ~ 0.80 m |
+
+限位在 `motion_planner.launch.py` 里用 `target_x_min` 等参数配置。
+默认范围偏宽，视觉偶发的边缘坏点可能通过预检，建议按实际工作台收紧。
 
 ### 更新手眼标定
 
+标定已固化，正常使用不需要重标。需要重标时用 `xarm_oak_handeye` 包
+（AprilTag 板，眼在手上）：
+
 ```bash
-# 1. 采集标定数据
-python3 chessboard_xarm_calib_collect.py \
-    --calib oak_camera_calib.yaml --base-frame link_base --tcp-frame link_tcp
+export ROS_DOMAIN_ID=40
+SESSION_DIR="$HOME/oak_handeye/session_$(date +%Y%m%d_%H%M%S)"
 
-# 2. 计算标定结果
-python3 solve_oak_xarm_handeye.py --npz chessboard_xarm_calib_points.npz
+# 1. 采集：停稳机械臂后按 SPACE，残余运动会被自动拒绝
+ros2 run xarm_oak_handeye collect_eye_in_hand --output-dir "$SESSION_DIR"
 
-# 3. 将输出的 R 和 t 更新到 oaktf_trantoarm/launch/transform.launch.py
+# 2. 求解
+ros2 run xarm_oak_handeye solve_eye_in_hand \
+    --samples "$SESSION_DIR/eye_in_hand_samples.npz"
+
+# 3. 验收合格后把结果复制到 config/ 并重新编译
+cp "$SESSION_DIR/eye_in_hand_result.json" \
+   src/xarm_oak_handeye/config/eye_in_hand_result.json
+colcon build --packages-select xarm_oak_handeye
 ```
+
+验收标准与详细步骤见 `Bunker_Mini_Navigation_Guide.md` 第 13 节。
+
+当前固化结果：21/23 样本，`translation_rms=6.393 mm`、`rotation_rms=0.286 deg`、
+姿态跨度 55.8°。**6.4 mm 残差是 xArm6 正运动学的绝对精度，不是标定误差**，
+不必继续压：同一 TCP 位姿重复采样时视觉噪声比残差小约 20 倍，且
+TSAI / PARK / HORAUD / DANIILIDIS 四种算法结果全部落在 6.29–6.30 mm。
 
 ---
 
@@ -328,8 +390,12 @@ ros2 run tf2_tools view_frames          # TF 树
 | `linorobot2_navigation/config/navigation.yaml` | Nav2 参数 |
 | `linorobot2_navigation/config/slam.yaml` | SLAM Toolbox 参数 |
 | `path_planning/path_planning/algorithms/astar_costmap.py` | A* 代价感知算法 |
-| `oaktf_trantoarm/launch/transform.launch.py` | 手眼标定矩阵 |
-| `armtodeprition/armtodeprition/motion_planner_node.py` | 运动规划与障碍物配置 |
+| `xarm_oak_handeye/config/eye_in_hand_result.json` | 手眼标定外参（已固化，随包安装）|
+| `xarm_oak_handeye/xarm_oak_handeye/oak_peach_detector.py` | NPU 检测 + 立体深度三维定位 |
+| `armtodeprition/armtodeprition/motion_planner_node.py` | 运动规划、夹爪行程、安全预检 |
+| `armtodeprition/launch/motion_planner.launch.py` | 限位、自动抓取、夹爪角度参数 |
+| `start_peach_grasp.sh` | 视觉抓取一键启动（Domain 40）|
+| `start_bunker_navigation.sh` | 底盘导航一键启动（Domain 20）|
 
 ---
 
@@ -337,7 +403,10 @@ ros2 run tf2_tools view_frames          # TF 树
 
 ```
 ros2_buker_xarm6_oak4/
-├── start_bunker_navigation.sh
+├── start_bunker_navigation.sh   # 底盘导航一键启动 (Domain 20)
+├── start_arm_system.sh          # 机械臂分模式启动 (Domain 40)
+├── start_peach_grasp.sh         # 视觉抓取一键启动 (Domain 40)
+├── Bunker_Mini_Navigation_Guide.md   # 运维手册：分域/标定/抓取/排查
 ├── maps/
 └── src/
     ├── bunker_ros2/            # Bunker Mini 底盘驱动
@@ -349,8 +418,15 @@ ros2_buker_xarm6_oak4/
     │       ├── astar_costmap.py
     │       ├── jps.py
     │       └── jps_improved.py
-    ├── oak_yolo_py/            # OAK 相机 YOLO 检测
-    ├── oaktf_trantoarm/        # 手眼标定坐标转换
+    ├── oak_yolo_py/            # OAK 相机 YOLO 检测与模型文件
+    ├── xarm_oak_handeye/       # 眼在手上标定 + NPU 检测 + 坐标转换
+    │   ├── config/             #   已固化外参
+    │   └── xarm_oak_handeye/
+    │       ├── collect_eye_in_hand.py
+    │       ├── solve_eye_in_hand.py
+    │       ├── oak_peach_detector.py
+    │       └── target_to_base.py
+    ├── oaktf_trantoarm/        # 旧版坐标转换（棋盘格流程保留）
     ├── armtodeprition/         # MoveIt2 运动规划
     └── xarm_ros2/              # xArm SDK
 ```

@@ -15,6 +15,15 @@
   <depend>shape_msgs</depend>
   <depend>xarm_msgs</depend>
 
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>linorobot2_bringup</exec_depend>
+  <exec_depend>linorobot2_navigation</exec_depend>
+  <exec_depend>xarm_moveit_config</exec_depend>
+  <exec_depend>oak_yolo_py</exec_depend>
+  <exec_depend>oaktf_trantoarm</exec_depend>
+  <exec_depend>path_planning</exec_depend>
+
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

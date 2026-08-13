@@ -41,10 +41,20 @@ def launch_setup(context, *args, **kwargs):
     kinematics_suffix = LaunchConfiguration('kinematics_suffix', default='')
 
     add_gripper = LaunchConfiguration('add_gripper', default=False)
+    add_arc_gripper = LaunchConfiguration('add_arc_gripper', default=False)
+    arc_gripper_left_xyz = LaunchConfiguration('arc_gripper_left_xyz', default='"0.011717 -0.038337 0.058564"')
+    arc_gripper_left_rpy = LaunchConfiguration('arc_gripper_left_rpy', default='"0 -1.5707963267948966 0"')
+    arc_gripper_right_xyz = LaunchConfiguration('arc_gripper_right_xyz', default='"0.010000 0.096583 0.058564"')
+    arc_gripper_right_rpy = LaunchConfiguration('arc_gripper_right_rpy', default='"0 -1.5707963267948966 0"')
     add_vacuum_gripper = LaunchConfiguration('add_vacuum_gripper', default=False)
     add_bio_gripper = LaunchConfiguration('add_bio_gripper', default=False)
     add_realsense_d435i = LaunchConfiguration('add_realsense_d435i', default=False)
     add_d435i_links = LaunchConfiguration('add_d435i_links', default=True)
+    add_oak_d_sr = LaunchConfiguration('add_oak_d_sr', default=False)
+    add_oak_d_sr_camera_collision = LaunchConfiguration('add_oak_d_sr_camera_collision', default=False)
+    oak_d_sr_camera_xyz = LaunchConfiguration('oak_d_sr_camera_xyz', default='"0 0 0"')
+    oak_d_sr_camera_rpy = LaunchConfiguration('oak_d_sr_camera_rpy', default='"0 0 0"')
+    oak_d_sr_camera_safety_radius = LaunchConfiguration('oak_d_sr_camera_safety_radius', default=0.065)
     add_other_geometry = LaunchConfiguration('add_other_geometry', default=False)
     geometry_type = LaunchConfiguration('geometry_type', default='box')
     geometry_mass = LaunchConfiguration('geometry_mass', default=0.1)
@@ -98,10 +108,20 @@ def launch_setup(context, *args, **kwargs):
         ros2_control_plugin=ros2_control_plugin,
         ros2_control_params=ros2_control_params,
         add_gripper=add_gripper,
+        add_arc_gripper=add_arc_gripper,
+        arc_gripper_left_xyz=arc_gripper_left_xyz,
+        arc_gripper_left_rpy=arc_gripper_left_rpy,
+        arc_gripper_right_xyz=arc_gripper_right_xyz,
+        arc_gripper_right_rpy=arc_gripper_right_rpy,
         add_vacuum_gripper=add_vacuum_gripper,
         add_bio_gripper=add_bio_gripper,
         add_realsense_d435i=add_realsense_d435i,
         add_d435i_links=add_d435i_links,
+        add_oak_d_sr=add_oak_d_sr,
+        add_oak_d_sr_camera_collision=add_oak_d_sr_camera_collision,
+        oak_d_sr_camera_xyz=oak_d_sr_camera_xyz,
+        oak_d_sr_camera_rpy=oak_d_sr_camera_rpy,
+        oak_d_sr_camera_safety_radius=oak_d_sr_camera_safety_radius,
         add_other_geometry=add_other_geometry,
         geometry_type=geometry_type,
         geometry_mass=geometry_mass,

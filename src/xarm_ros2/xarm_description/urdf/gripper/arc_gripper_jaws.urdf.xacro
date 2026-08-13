@@ -1,0 +1,63 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="arc_gripper_jaws">
+  <!--
+    White 3D-printed 65 mm-ID arc jaws replacing the factory xArm finger plates.
+
+    The supplied STEP is a two-solid assembly in millimetres.  Each solid is
+    exported without mirroring so the M3 mounting features and the handedness
+    remain the same as the manufactured parts.  The two M3 hole centres are
+    aligned to the factory finger-plate screw holes and retained as launch
+    arguments for a small field fit in RViz.
+  -->
+  <xacro:macro name="arc_gripper_jaws_urdf" params="
+    prefix:=''
+    left_finger_link:=''
+    right_finger_link:=''
+    left_xyz:='0.011717 -0.038337 0.058564'
+    left_rpy:='0 -1.5707963267948966 0'
+    right_xyz:='0.010000 0.096583 0.058564'
+    right_rpy:='0 -1.5707963267948966 0'
+    ">
+    <link name="${prefix}arc_gripper_left_jaw_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_path}/end_tool/custom_arc_gripper/arc_gripper_left.stl" scale="0.001 0.001 0.001" />
+        </geometry>
+        <material name="${prefix}White" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_path}/end_tool/custom_arc_gripper/arc_gripper_left.stl" scale="0.001 0.001 0.001" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}arc_gripper_left_jaw_fix" type="fixed">
+      <parent link="${left_finger_link}" />
+      <child link="${prefix}arc_gripper_left_jaw_link" />
+      <origin xyz="${left_xyz}" rpy="${left_rpy}" />
+    </joint>
+
+    <link name="${prefix}arc_gripper_right_jaw_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_path}/end_tool/custom_arc_gripper/arc_gripper_right.stl" scale="0.001 0.001 0.001" />
+        </geometry>
+        <material name="${prefix}White" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_path}/end_tool/custom_arc_gripper/arc_gripper_right.stl" scale="0.001 0.001 0.001" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}arc_gripper_right_jaw_fix" type="fixed">
+      <parent link="${right_finger_link}" />
+      <child link="${prefix}arc_gripper_right_jaw_link" />
+      <origin xyz="${right_xyz}" rpy="${right_rpy}" />
+    </joint>
+  </xacro:macro>
+</robot>

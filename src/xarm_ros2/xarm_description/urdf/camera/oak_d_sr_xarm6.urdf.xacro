@@ -1,0 +1,65 @@
+<?xml version="1.0"?>
+<robot xmlns:xacro="http://ros.org/wiki/xacro" name="oak_d_sr_xarm6">
+  <!--
+    CAD origin: centre of the xArm6 flange mounting face.  The supplied STL is
+    in millimetres, hence the 0.001 scale.  Its measured CAD bounding extent
+    is X=75.0 mm, Y=133.5 mm, Z=4.0 mm (Y spans -37.5 to +96.0 mm from the
+    CAD flange origin).  This includes the camera-side support arms, so it
+    remains a collision mesh rather than only an RViz visual. The mounted
+    part is rotated clockwise 90 degrees when viewed from outside the flange;
+    in the ROS right-handed flange frame this is a -90 degree local Z rotation.
+  -->
+  <xacro:macro name="oak_d_sr_xarm6_urdf" params="
+    prefix:=''
+    flange_link:=''
+    tcp_link:=''
+    add_camera_collision:='false'
+    camera_xyz:='0 0 0'
+    camera_rpy:='0 0 0'
+    camera_safety_radius:='0.065'
+    ">
+    <link name="${prefix}oak_d_sr_mount_link">
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_path}/oak_d_sr/oak_d_sr_xarm6_flange.stl" scale="0.001 0.001 0.001" />
+        </geometry>
+        <material name="${prefix}Black" />
+      </visual>
+      <collision>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_path}/oak_d_sr/oak_d_sr_xarm6_flange.stl" scale="0.001 0.001 0.001" />
+        </geometry>
+      </collision>
+    </link>
+    <joint name="${prefix}oak_d_sr_mount_fix" type="fixed">
+      <parent link="${flange_link}" />
+      <child link="${prefix}oak_d_sr_mount_link" />
+      <origin xyz="0 0 0" rpy="0 0 -1.5707963267948966" />
+    </joint>
+
+    <!--
+      The calibration result gives TCP -> RGB optical frame.  A conservative
+      65 mm sphere protects the camera body and connector until a full camera
+      CAD mesh is available.  It is intentionally disabled until calibration
+      supplies a real transform; the mount STL remains collision-enabled.
+    -->
+    <xacro:if value="${add_camera_collision}">
+      <link name="${prefix}oak_rgb_camera_optical_frame">
+        <visual>
+          <geometry><sphere radius="${camera_safety_radius}" /></geometry>
+          <material name="${prefix}Silver" />
+        </visual>
+        <collision>
+          <geometry><sphere radius="${camera_safety_radius}" /></geometry>
+        </collision>
+      </link>
+      <joint name="${prefix}oak_d_sr_camera_fix" type="fixed">
+        <parent link="${tcp_link}" />
+        <child link="${prefix}oak_rgb_camera_optical_frame" />
+        <origin xyz="${camera_xyz}" rpy="${camera_rpy}" />
+      </joint>
+    </xacro:if>
+  </xacro:macro>
+</robot>

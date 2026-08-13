@@ -1,116 +1,62 @@
-# Orange Detection Node - 使用说明
+# OAK4-D-Pro YOLO + 深度节点
 
-## 功能说明
+当前节点默认使用 `/home/qluo/best.rvc4.tar.xz`（`yellow_peach` 分割归档）在 OAK4-D-Pro 的 RVC4 NPU 上推理，
+本机只负责接收 RGB、检测框和对齐深度。深度话题是原始毫米值，不是伪彩色图，
+可直接给 AprilTag 深度取点和 xArm6 手眼标定使用。
 
-这个ROS2节点使用OAK相机和YOLO11模型检测橙子（orange），并通过ROS2话题发布检测结果，供xArm6机械臂使用。
+## 启动
 
-## 发布的话题
-
-### 1. `/oak/orange_detection` (std_msgs/String)
-完整的检测信息（JSON格式）：
-```json
-{
-  "class": "orange",
-  "confidence": 0.856,
-  "bbox": [320, 240, 450, 380],
-  "center_pixel": [385, 310],
-  "distance_cm": 45.32,
-  "distance_mm": 453,
-  "timestamp": 1704182400
-}
-```
-
-### 2. `/oak/orange_coordinates` (std_msgs/String)
-简化的坐标信息（用于xArm6控制）：
-```json
-{
-  "x_pixel": 385,
-  "y_pixel": 310,
-  "z_mm": 453,
-  "confidence": 0.856
-}
-```
-
-## 编译和运行
-
-### 1. 编译包
 ```bash
 cd ~/ros2_ws
-colcon build --packages-select oak_yolo_py
+source /opt/ros/jazzy/setup.bash
 source install/setup.bash
+./start_arm_system.sh oak
 ```
 
-### 2. 运行节点
+无图形桌面时：
+
 ```bash
-ros2 run oak_yolo_py oak_yolo_node
+OAK_SHOW_WINDOW=false ./start_arm_system.sh oak
 ```
 
-### 3. 查看话题
-在另一个终端：
+切换到 `/home/qluo/test.py` 使用的 17 点 Pose 模型：
+
 ```bash
-# 查看所有话题
-ros2 topic list
-
-# 监听橙子检测结果
-ros2 topic echo /oak/orange_detection
-
-# 监听坐标信息
-ros2 topic echo /oak/orange_coordinates
+OAK_MODEL_ARCHIVE=/home/qluo/yolov8l-pose.rvc4.tar.xz ./start_arm_system.sh oak
 ```
 
-## 参数配置
+当前运行时需要 DepthAI `3.8.0` 和 `depthai-nodes 0.6.0`；两份归档都已安装到 ROS 包的
+`share/oak_yolo_py/models/`。
 
-在 `oak_yolo_node.py` 中可以修改以下参数：
+## 帧率
 
-- `self.conf_thres = 0.5` - 置信度阈值（0-1）
-- `self.target_class = 'orange'` - 目标检测类别
-- `self.min_dist_cm = 30.0` - 最小检测距离（厘米）
-- `self.max_dist_cm = 150.0` - 最大检测距离（厘米）
+默认请求 `60 FPS` 的相机和板载推理预览。实测黄桃模型约 `58.7 FPS`；完整 `1280x800`
+RGB 和 `16UC1` 深度用于标定，分别以 30 FPS 和约 50 FPS 工作，避免大数据流拖慢实时窗口。
 
-## 下一步：集成xArm6
+显示窗口包括 RGB+YOLO 和对齐深度；按空格保存 RGB、标注图、16 位深度 PNG 配对样本，
+按 Q 退出。样本和工厂标定文件保存在 `~/oak_snapshots/`。
 
-创建一个订阅节点来接收橙子坐标并控制xArm6：
+## ROS 2 输出
 
-```python
-import rclpy
-from rclpy.node import Node
-from std_msgs.msg import String
-import json
+| 话题 | 类型 | 内容 |
+|---|---|---|
+| `/oak_result` | `std_msgs/String` | `label,confidence,x,y,z`，XYZ 单位 mm |
+| `/oak/rgb/image_raw` | `sensor_msgs/Image` | `1280x800`, `bgr8` |
+| `/oak/rgb/image_annotated` | `sensor_msgs/Image` | 板载 YOLO 结果叠框预览（模型输入尺寸） |
+| `/oak/depth/image_raw` | `sensor_msgs/Image` | `1280x800`, `16UC1`，每像素 mm |
+| `/oak/rgb/camera_info` | `sensor_msgs/CameraInfo` | RGB 内参和畸变 |
+| `/oak/depth/camera_info` | `sensor_msgs/CameraInfo` | 与 RGB 对齐的深度内参 |
+| `/oak_pose` | `std_msgs/String` | JSON 检测结果；Pose 模型包含关键点数组 |
 
-class XArmControlNode(Node):
-    def __init__(self):
-        super().__init__('xarm_control_node')
-        self.subscription = self.create_subscription(
-            String,
-            '/oak/orange_coordinates',
-            self.orange_callback,
-            10)
-    
-    def orange_callback(self, msg):
-        data = json.loads(msg.data)
-        x_pixel = data['x_pixel']
-        y_pixel = data['y_pixel']
-        z_mm = data['z_mm']
-        confidence = data['confidence']
-        
-        self.get_logger().info(f'收到橙子坐标: ({x_pixel}, {y_pixel}, {z_mm}mm), 置信度: {confidence}')
-        
-        # TODO: 坐标转换和机械臂控制
-        # 1. 像素坐标 -> 相机坐标
-        # 2. 相机坐标 -> 机械臂基座坐标
-        # 3. 调用xArm6 API移动到目标位置
+读取深度时必须按 `16UC1` 处理；不要把它当成 `bgr8` 伪彩色图用于计算。
+
+## 查看数据
+
+```bash
+ros2 topic echo /oak_result
+ros2 topic hz /oak/rgb/image_raw
+ros2 topic echo --once /oak/rgb/camera_info
 ```
 
-## 故障排查
-
-1. **找不到模型文件**
-   - 确保 `yolo11m.rvc4.tar.xz` 在 `oak_yolo_py/oak_yolo_py/` 目录下
-
-2. **相机连接失败**
-   - 检查OAK相机USB连接
-   - 运行 `depthai-python` 测试脚本验证相机
-
-3. **没有检测结果**
-   - 检查橙子是否在30-150cm范围内
-   - 调整 `conf_thres` 降低置信度阈值
-   - 确保光照条件良好
+`~/oak_snapshots/oak_factory_calibration.json` 包含三个相机的工厂内参、畸变和左右目外参，
+可供后续 AprilTag 标定脚本读取。

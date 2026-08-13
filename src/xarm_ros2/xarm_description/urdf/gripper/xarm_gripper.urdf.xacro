@@ -1,7 +1,7 @@
 <?xml version="1.0"?>
 <robot xmlns:xacro="http://ros.org/wiki/xacro" name="xarm_gripper">
 
-  <xacro:macro name="xarm_gripper_urdf" params="prefix:='' attach_to:='' attach_xyz:='0 0 0' attach_rpy:='0 0 0' ">
+  <xacro:macro name="xarm_gripper_urdf" params="prefix:='' attach_to:='' attach_xyz:='0 0 0' attach_rpy:='0 0 0' replace_finger_meshes:=false ">
 
     <xacro:unless value="${attach_to == ''}">
       <joint name="${prefix}gripper_fix" type="fixed">
@@ -62,15 +62,28 @@
           ixx="1.7493E-05" ixy="-4.2156E-19" ixz="6.9164E-18"
           iyy="1.7225E-05" iyz="4.6433E-06" izz="5.1466E-06" />
       </inertial>
-      <xacro:common_link_visual 
-        mesh_filename="gripper/xarm/left_finger"  
-        origin_xyz="0 0 0" 
-        origin_rpy="0 0 0"
-        material_name="${prefix}Silver" />
-      <xacro:common_link_collision 
-        mesh_filename="gripper/xarm/left_finger"  
-        origin_xyz="0 0 0" 
-        origin_rpy="0 0 0" />
+      <!--
+        The custom jaw replaces this plate physically.  Keep its mesh as an
+        RViz-only mounting-hole reference, but never as collision geometry.
+      -->
+      <xacro:if value="${replace_finger_meshes}">
+        <xacro:common_link_visual
+          mesh_filename="gripper/xarm/left_finger"
+          origin_xyz="0 0 0"
+          origin_rpy="0 0 0"
+          material_name="${prefix}Silver" />
+      </xacro:if>
+      <xacro:unless value="${replace_finger_meshes}">
+        <xacro:common_link_visual 
+          mesh_filename="gripper/xarm/left_finger"  
+          origin_xyz="0 0 0" 
+          origin_rpy="0 0 0"
+          material_name="${prefix}Silver" />
+        <xacro:common_link_collision 
+          mesh_filename="gripper/xarm/left_finger"  
+          origin_xyz="0 0 0" 
+          origin_rpy="0 0 0" />
+      </xacro:unless>
     </link>
     <joint name="${prefix}left_finger_joint" type="revolute">
       <origin xyz="0 0.035465 0.042039" rpy="0 0 0" />
@@ -140,15 +153,28 @@
           ixx="1.7493E-05" ixy="-5.0014E-19" ixz="-7.5079E-18"
           iyy="1.7225E-05" iyz="-4.6435E-06" izz="5.1466E-06" />
       </inertial>
-      <xacro:common_link_visual 
-        mesh_filename="gripper/xarm/right_finger"  
-        origin_xyz="0 0 0" 
-        origin_rpy="0 0 0"
-        material_name="${prefix}Silver" />
-      <xacro:common_link_collision 
-        mesh_filename="gripper/xarm/right_finger"  
-        origin_xyz="0 0 0" 
-        origin_rpy="0 0 0" />
+      <!--
+        The custom jaw replaces this plate physically.  Keep its mesh as an
+        RViz-only mounting-hole reference, but never as collision geometry.
+      -->
+      <xacro:if value="${replace_finger_meshes}">
+        <xacro:common_link_visual
+          mesh_filename="gripper/xarm/right_finger"
+          origin_xyz="0 0 0"
+          origin_rpy="0 0 0"
+          material_name="${prefix}Silver" />
+      </xacro:if>
+      <xacro:unless value="${replace_finger_meshes}">
+        <xacro:common_link_visual 
+          mesh_filename="gripper/xarm/right_finger"  
+          origin_xyz="0 0 0" 
+          origin_rpy="0 0 0"
+          material_name="${prefix}Silver" />
+        <xacro:common_link_collision 
+          mesh_filename="gripper/xarm/right_finger"  
+          origin_xyz="0 0 0" 
+          origin_rpy="0 0 0" />
+      </xacro:unless>
     </link>
     <joint name="${prefix}right_finger_joint" type="revolute">
       <origin xyz="0 -0.035465 0.042039" rpy="0 0 0" />

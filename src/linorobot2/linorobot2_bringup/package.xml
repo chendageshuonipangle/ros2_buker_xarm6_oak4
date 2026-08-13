@@ -23,6 +23,7 @@
   <exec_depend>depth_image_proc</exec_depend>
   <exec_depend>bunker_base</exec_depend>
   <exec_depend>bunker_msgs</exec_depend>
+  <exec_depend>yesense_std_ros2</exec_depend>
   <export>
     <build_type>ament_cmake</build_type>
   </export>

@@ -14,6 +14,7 @@
 
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import IfCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch_ros.substitutions import FindPackageShare
@@ -37,8 +38,16 @@ def generate_launch_description():
         [FindPackageShare('sllidar_ros2'), 'launch', 'sllidar_a1_launch.py']
     )
 
+    yesense_net_launch_path = PathJoinSubstitution(
+        [FindPackageShare('yesense_std_ros2'), 'launch', 'yesense_net_node.launch.py']
+    )
+
     laser_filter_config = PathJoinSubstitution(
         [FindPackageShare('linorobot2_bringup'), 'config', 'laser_filter.yaml']
+    )
+
+    laser_filter_slam_config = PathJoinSubstitution(
+        [FindPackageShare('linorobot2_bringup'), 'config', 'laser_filter_slam.yaml']
     )
 
     return LaunchDescription([
@@ -78,6 +87,12 @@ def generate_launch_description():
             description='Odometry topic name from bunker_base'
         ),
 
+        DeclareLaunchArgument(
+            name='use_yesense_imu',
+            default_value='true',
+            description='Launch YESENSE network IMU'
+        ),
+
         # Launch Bunker base driver
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(bunker_base_launch_path),
@@ -105,7 +120,13 @@ def generate_launch_description():
             PythonLaunchDescriptionSource(rplidar_launch_path)
         ),
 
-        # Laser filter: 过滤后方 120° 遮挡区域
+        # Launch YESENSE network IMU
+        IncludeLaunchDescription(
+            PythonLaunchDescriptionSource(yesense_net_launch_path),
+            condition=IfCondition(LaunchConfiguration('use_yesense_imu')),
+        ),
+
+        # Laser filter: obstacle avoidance, 240-deg FOV -> /scan_filtered
         Node(
             package='laser_filters',
             executable='scan_to_scan_filter_chain',
@@ -117,8 +138,45 @@ def generate_launch_description():
             ]
         ),
 
+        # Laser filter: AMCL localization, 270-deg FOV -> /scan_slam
+        Node(
+            package='laser_filters',
+            executable='scan_to_scan_filter_chain',
+            name='laser_filter_slam',
+            parameters=[laser_filter_slam_config],
+            remappings=[
+                ('scan', 'scan'),
+                ('scan_filtered', 'scan_slam')
+            ]
+        ),
+
         # Launch sensors
         IncludeLaunchDescription(
             PythonLaunchDescriptionSource(sensors_launch_path),
-        )
+        ),
+
+        # Record driven path and publish to /driven_path (TRANSIENT_LOCAL)
+        Node(
+            package='path_recorder',
+            executable='path_recorder_node.py',
+            name='path_recorder',
+            parameters=[{
+                'odom_topic': 'odom',
+                'frame_id': 'odom',
+                'min_dist_m': 0.05,
+            }],
+            output='screen',
+        ),
+
+        # Publish waypoints from dadian.txt as MarkerArray to /waypoint_markers (TRANSIENT_LOCAL)
+        Node(
+            package='path_recorder',
+            executable='waypoint_marker_node.py',
+            name='waypoint_marker',
+            parameters=[{
+                'frame_id': 'map',
+                'publish_interval_s': 5.0,
+            }],
+            output='screen',
+        ),
     ])

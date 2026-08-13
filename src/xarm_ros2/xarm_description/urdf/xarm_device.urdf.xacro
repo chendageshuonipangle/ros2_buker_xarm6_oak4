@@ -6,6 +6,11 @@
   <xacro:arg name="effort_control" default="false"/>
   <xacro:arg name="velocity_control" default="false"/>
   <xacro:arg name="add_gripper" default="false"/>
+  <xacro:arg name="add_arc_gripper" default="false"/>
+  <xacro:arg name="arc_gripper_left_xyz" default="0.011717 -0.038337 0.058564"/>
+  <xacro:arg name="arc_gripper_left_rpy" default="0 -1.5707963267948966 0"/>
+  <xacro:arg name="arc_gripper_right_xyz" default="0.010000 0.096583 0.058564"/>
+  <xacro:arg name="arc_gripper_right_rpy" default="0 -1.5707963267948966 0"/>
   <xacro:arg name="add_vacuum_gripper" default="false"/>
   <xacro:arg name="add_bio_gripper" default="false"/>
   <xacro:arg name="model1300" default="false"/>
@@ -24,6 +29,11 @@
   <xacro:arg name="use_gazebo_camera" default="false"/>
 
   <xacro:arg name="add_other_geometry" default="false"/>
+  <xacro:arg name="add_oak_d_sr" default="false"/>
+  <xacro:arg name="add_oak_d_sr_camera_collision" default="false"/>
+  <xacro:arg name="oak_d_sr_camera_xyz" default="0 0 0"/>
+  <xacro:arg name="oak_d_sr_camera_rpy" default="0 0 0"/>
+  <xacro:arg name="oak_d_sr_camera_safety_radius" default="0.065"/>
   <xacro:arg name="geometry_type" default="box"/>
   <xacro:arg name="geometry_mass" default="0.1"/>
   <xacro:arg name="geometry_height" default="0.1"/>
@@ -50,13 +60,21 @@
   <xacro:include filename="$(find xarm_description)/urdf/xarm_device_macro.xacro" />
   <xacro:xarm_device prefix="$(arg prefix)" hw_ns="$(arg hw_ns)" limited="$(arg limited)" 
     effort_control="$(arg effort_control)" velocity_control="$(arg velocity_control)"
-    add_gripper="$(arg add_gripper)" add_vacuum_gripper="$(arg add_vacuum_gripper)" 
+    add_gripper="$(arg add_gripper)" add_arc_gripper="$(arg add_arc_gripper)"
+    arc_gripper_left_xyz="$(arg arc_gripper_left_xyz)" arc_gripper_left_rpy="$(arg arc_gripper_left_rpy)"
+    arc_gripper_right_xyz="$(arg arc_gripper_right_xyz)" arc_gripper_right_rpy="$(arg arc_gripper_right_rpy)"
+    add_vacuum_gripper="$(arg add_vacuum_gripper)" 
     add_bio_gripper="$(arg add_bio_gripper)" dof="$(arg dof)" 
     ros2_control_plugin="$(arg ros2_control_plugin)" robot_type="$(arg robot_type)" 
     load_gazebo_plugin="true" ros2_control_params="$(arg ros2_control_params)"
     add_realsense_d435i="$(arg add_realsense_d435i)" 
     add_d435i_links="$(arg add_d435i_links)" 
     add_other_geometry="$(arg add_other_geometry)" 
+    add_oak_d_sr="$(arg add_oak_d_sr)"
+    add_oak_d_sr_camera_collision="$(arg add_oak_d_sr_camera_collision)"
+    oak_d_sr_camera_xyz="$(arg oak_d_sr_camera_xyz)"
+    oak_d_sr_camera_rpy="$(arg oak_d_sr_camera_rpy)"
+    oak_d_sr_camera_safety_radius="$(arg oak_d_sr_camera_safety_radius)"
     geometry_type="$(arg geometry_type)" geometry_mass="$(arg geometry_mass)"
     geometry_height="$(arg geometry_height)" geometry_radius="$(arg geometry_radius)"
     geometry_length="$(arg geometry_length)" geometry_width="$(arg geometry_width)"

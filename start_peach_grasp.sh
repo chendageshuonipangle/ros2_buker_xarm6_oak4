@@ -29,6 +29,9 @@ GRIPPER_CLOSE_DEG="${GRIPPER_CLOSE_DEG:-42.0}"
 TWIST_ENABLE="${TWIST_ENABLE:-true}"
 TWIST_DEG="${TWIST_DEG:-45.0}"
 TWIST_CYCLES="${TWIST_CYCLES:-2}"
+# 夹住后等夹持稳定再拧；负载告知控制器，避免搬运途中误报 C31。
+GRIP_SETTLE_S="${GRIP_SETTLE_S:-1.0}"
+PAYLOAD_KG="${PAYLOAD_KG:-0.3}"
 # ==================================================
 
 export ROS_DOMAIN_ID=40
@@ -45,6 +48,7 @@ usage() {
   vision    只启动 TF + 检测，不启动 MoveIt 和规划（安全，臂不会动）
   check     只做环境自检，不启动任何节点
   trigger   触发一次抓取（自动 source + Domain 40，省去手工配环境）
+  recover   机械臂报错后清错误并重新激活控制器
   status    查看目标点是否真的在发布、服务是否在线
   stop      停掉视觉与规划节点（MoveIt 保留）
   stop --with-moveit
@@ -61,6 +65,8 @@ usage() {
   TWIST_DEG=60        joint6 拧转幅度 deg（默认 45）
   TWIST_CYCLES=3      拧转轮数（默认 2）
   TWIST_ENABLE=false  关闭拧转
+  GRIP_SETTLE_S=1.5   夹住后等待多久再拧转（默认 1.0s）
+  PAYLOAD_KG=0.5      果子重量 kg（默认 0.3，用于力矩补偿）
 
 示例:
   ./start_peach_grasp.sh                    # 全部启动，手动触发抓取
@@ -291,7 +297,7 @@ start_planner() {
         ok "自动抓取关闭，需手动调用 /execute_grasp 触发"
     fi
     if [ "$TWIST_ENABLE" = "true" ]; then
-        echo "      拧转摘果: joint6 ±${TWIST_DEG}° × ${TWIST_CYCLES} 轮"
+        echo "      拧转摘果: joint6 ±${TWIST_DEG}° × ${TWIST_CYCLES} 轮 (夹持稳定 ${GRIP_SETTLE_S}s 后开始)"
     else
         echo "      拧转摘果: 已关闭"
     fi
@@ -301,6 +307,8 @@ start_planner() {
         twist_enable:="$TWIST_ENABLE" \
         twist_deg:="$TWIST_DEG" \
         twist_cycles:="$TWIST_CYCLES" \
+        grip_settle_s:="$GRIP_SETTLE_S" \
+        payload_kg:="$PAYLOAD_KG" \
         > "$LOG_DIR/3_planner.log" 2>&1 &
     PIDS+=($!)
 
@@ -498,6 +506,17 @@ case "$MODE" in
     trigger)
         trigger_grasp
         exit $?
+        ;;
+    recover)
+        log "清除机械臂错误并重新激活控制器"
+        if ! ros2 service list 2>/dev/null | grep -q "/recover_arm"; then
+            bad "/recover_arm 不在线，规划节点没起来"
+            exit 1
+        fi
+        out=$(ros2 service call /recover_arm std_srvs/srv/Trigger 2>&1)
+        echo "$out" | sed 's/^/      /'
+        echo "$out" | grep -q "success=True" && ok "已恢复" || bad "恢复失败，见文档 14.10 节"
+        exit 0
         ;;
     vision)
         preflight || warn "自检有问题，仍继续（vision 模式不动机械臂）"

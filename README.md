@@ -238,6 +238,7 @@ AUTO_EXECUTE=false ./start_peach_grasp.sh   # 主终端
 | `GRIPPER_CLOSE_DEG` | `42.0` | 夹爪闭合角度，满闭合 48.7 |
 | `TWIST_DEG` | `45.0` | 夹住后 joint6 拧转幅度，用于扭断果柄 |
 | `TWIST_CYCLES` | `2` | 拧转轮数；`TWIST_ENABLE=false` 可关闭 |
+| `PAYLOAD_KG` | `0.3` | 果子重量，用于力矩补偿，防止误报 C31 故障 |
 | `MAX_DEPTH_MM` | `700` | 深度上限，掐掉远景误报 |
 
 重启前务必先清干净，否则两个规划节点会同时向 MoveIt 发轨迹，
@@ -245,6 +246,12 @@ AUTO_EXECUTE=false ./start_peach_grasp.sh   # 主终端
 
 ```bash
 ./start_peach_grasp.sh stop --with-moveit
+```
+
+机械臂报 C31 故障后（控制器会被停用，之后所有轨迹都被拒）：
+
+```bash
+./start_peach_grasp.sh recover
 ```
 
 完整说明（四层启动顺序、三道安全闸、抓取动作序列、故障排查、

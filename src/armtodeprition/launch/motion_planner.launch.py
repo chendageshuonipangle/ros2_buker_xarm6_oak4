@@ -63,6 +63,21 @@ def generate_launch_description():
             description='每步拧转后的停顿 (s)'
         ),
         DeclareLaunchArgument(
+            'grip_settle_s',
+            default_value='1.0',
+            description='闭合夹爪后等待夹持稳定的时间 (s)，之后才拧转'
+        ),
+        DeclareLaunchArgument(
+            'payload_kg',
+            default_value='0.3',
+            description='抓取后告知控制器的负载 (kg)，避免误报 C31'
+        ),
+        DeclareLaunchArgument(
+            'auto_recover',
+            default_value='true',
+            description='控制器故障后自动清错误并重新激活'
+        ),
+        DeclareLaunchArgument(
             'approach_height',
             default_value='0.05',
             description='接近高度 (m)'
@@ -113,6 +128,9 @@ def generate_launch_description():
                 'twist_deg': LaunchConfiguration('twist_deg'),
                 'twist_cycles': LaunchConfiguration('twist_cycles'),
                 'twist_settle_s': LaunchConfiguration('twist_settle_s'),
+                'grip_settle_s': LaunchConfiguration('grip_settle_s'),
+                'payload_kg': LaunchConfiguration('payload_kg'),
+                'auto_recover': LaunchConfiguration('auto_recover'),
                 'gripper_open_deg': LaunchConfiguration('gripper_open_deg'),
                 'auto_execute_interval': LaunchConfiguration('auto_execute_interval'),
                 'approach_height': LaunchConfiguration('approach_height'),

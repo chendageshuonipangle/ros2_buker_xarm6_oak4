@@ -46,6 +46,8 @@ from moveit_msgs.msg import (
     RobotTrajectory
 )
 from control_msgs.action import GripperCommand
+from controller_manager_msgs.srv import ListControllers, SwitchController
+from xarm_msgs.srv import Call, SetInt16, SetInt16ById, SetTcpLoad
 
 
 def quaternion_from_euler_xyz(roll, pitch, yaw, degrees=False):
@@ -113,6 +115,18 @@ class ArmMotionPlannerNode(Node):
         self.declare_parameter('twist_deg', 45.0)
         self.declare_parameter('twist_cycles', 2)
         self.declare_parameter('twist_settle_s', 0.4)
+        # Let the gripper actually clamp before applying torque. Commanding a
+        # twist while the jaws are still closing shears against a loose grip
+        # and either drops the fruit or spikes the joint current.
+        self.declare_parameter('grip_settle_s', 1.0)
+        # Payload told to the controller after the grasp. The xArm compensates
+        # joint torque from this figure; leaving it at zero while carrying
+        # fruit is what trips C31 [Collision Caused Abnormal Joint Current]
+        # on the way home.
+        self.declare_parameter('payload_kg', 0.3)
+        self.declare_parameter('payload_cog_mm', [0.0, 0.0, 48.0])
+        # Auto-recover from a controller fault instead of leaving the arm dead.
+        self.declare_parameter('auto_recover', True)
         self.declare_parameter('auto_execute_interval', 3.0)
         self.declare_parameter('target_x_min', 0.10)
         self.declare_parameter('target_x_max', 0.80)
@@ -135,6 +149,12 @@ class ArmMotionPlannerNode(Node):
         self.twist_deg = self.get_parameter('twist_deg').get_parameter_value().double_value
         self.twist_cycles = self.get_parameter('twist_cycles').get_parameter_value().integer_value
         self.twist_settle_s = self.get_parameter('twist_settle_s').get_parameter_value().double_value
+        self.grip_settle_s = self.get_parameter('grip_settle_s').get_parameter_value().double_value
+        self.payload_kg = self.get_parameter('payload_kg').get_parameter_value().double_value
+        self.payload_cog_mm = list(
+            self.get_parameter('payload_cog_mm').get_parameter_value().double_array_value
+        ) or [0.0, 0.0, 48.0]
+        self.auto_recover = self.get_parameter('auto_recover').get_parameter_value().bool_value
         self.auto_execute_interval = self.get_parameter('auto_execute_interval').get_parameter_value().double_value
         self.target_x_min = self.get_parameter('target_x_min').get_parameter_value().double_value
         self.target_x_max = self.get_parameter('target_x_max').get_parameter_value().double_value
@@ -188,10 +208,19 @@ class ArmMotionPlannerNode(Node):
         self.cartesian_path_client = self.create_client(GetCartesianPath, '/compute_cartesian_path', callback_group=self.callback_group)
         self.ik_client = self.create_client(GetPositionIK, '/compute_ik', callback_group=self.callback_group)
         self.gripper_client = ActionClient(self, GripperCommand, '/xarm_gripper/gripper_action', callback_group=self.callback_group)
+        # Fault recovery + payload compensation talk to the xArm driver directly.
+        self.clean_error_client = self.create_client(Call, '/xarm/clean_error', callback_group=self.callback_group)
+        self.motion_enable_client = self.create_client(SetInt16ById, '/xarm/motion_enable', callback_group=self.callback_group)
+        self.set_mode_client = self.create_client(SetInt16, '/xarm/set_mode', callback_group=self.callback_group)
+        self.set_state_client = self.create_client(SetInt16, '/xarm/set_state', callback_group=self.callback_group)
+        self.set_load_client = self.create_client(SetTcpLoad, '/xarm/set_tcp_load', callback_group=self.callback_group)
+        self.list_ctrl_client = self.create_client(ListControllers, '/controller_manager/list_controllers', callback_group=self.callback_group)
+        self.switch_ctrl_client = self.create_client(SwitchController, '/controller_manager/switch_controller', callback_group=self.callback_group)
         self.planning_scene_pub = self.create_publisher(PlanningScene, '/planning_scene', 10)
 
         # Services
         self.create_service(Trigger, '/execute_grasp', self.execute_grasp_callback, callback_group=self.callback_group)
+        self.create_service(Trigger, '/recover_arm', self.recover_arm_callback, callback_group=self.callback_group)
         self.create_service(Trigger, '/gripper_open', self.gripper_open_callback, callback_group=self.callback_group)
         self.create_service(Trigger, '/gripper_close', self.gripper_close_callback, callback_group=self.callback_group)
 
@@ -207,6 +236,10 @@ class ArmMotionPlannerNode(Node):
             )
         else:
             self.get_logger().info('拧转摘果: 已关闭')
+        self.get_logger().info(
+            f'抓取负载: {self.payload_kg:.2f} kg, 夹持稳定 {self.grip_settle_s:.1f}s, '
+            f'自动恢复 {"开" if self.auto_recover else "关"}'
+        )
         self.get_logger().info('Arm Motion Planner (Guarantee Advance) Ready.')
 
     def _assert_single_instance(self):
@@ -303,6 +336,96 @@ class ArmMotionPlannerNode(Node):
         wall.primitives.append(prim); wall.primitive_poses.append(pose)
         scene_msg.world.collision_objects.append(wall)
         self.planning_scene_pub.publish(scene_msg)
+
+    def _call_sync(self, client, request, label, timeout_s=5.0):
+        """Call a service and wait, returning None instead of raising."""
+        if not client.wait_for_service(timeout_sec=2.0):
+            self.get_logger().warn(f'{label}: 服务不可用')
+            return None
+        future = client.call_async(request)
+        deadline = time.time() + timeout_s
+        while not future.done() and time.time() < deadline:
+            time.sleep(0.02)
+        if not future.done():
+            self.get_logger().warn(f'{label}: 超时')
+            return None
+        return future.result()
+
+    def set_payload(self, weight_kg):
+        """Tell the controller how much the gripper is carrying.
+
+        The xArm feed-forwards joint torque from this figure. Carrying fruit
+        while the controller still believes the payload is zero shows up as
+        unexplained joint current and trips C31 mid-trajectory, which reads
+        like "the arm ran out of strength" but is really a fault trip.
+        """
+        request = SetTcpLoad.Request()
+        request.weight = float(weight_kg)
+        request.center_of_gravity = [float(v) for v in self.payload_cog_mm]
+        result = self._call_sync(self.set_load_client, request, 'set_tcp_load')
+        if result is None:
+            return False
+        if getattr(result, 'ret', -1) != 0:
+            self.get_logger().warn(f'set_tcp_load 返回 ret={result.ret}')
+            return False
+        self.get_logger().info(f'   负载已设为 {weight_kg:.2f} kg')
+        return True
+
+    def is_controller_active(self, name='xarm6_traj_controller'):
+        result = self._call_sync(self.list_ctrl_client, ListControllers.Request(),
+                                 'list_controllers')
+        if result is None:
+            return None
+        for controller in result.controller:
+            if controller.name == name:
+                return controller.state == 'active'
+        return None
+
+    def recover_from_fault(self):
+        """Clear an xArm fault and bring the trajectory controller back up.
+
+        A fault such as C31 makes the driver deactivate xarm6_traj_controller.
+        Every later goal is then rejected with "Controller is not running", so
+        the arm is stuck until someone clears it by hand. Clearing the error is
+        not enough: the controller must be re-activated too.
+        """
+        if not self.auto_recover:
+            return False
+        self.get_logger().warn('检测到控制器异常，开始自动恢复...')
+
+        if self._call_sync(self.clean_error_client, Call.Request(), 'clean_error') is None:
+            return False
+
+        enable = SetInt16ById.Request()
+        enable.id = 8          # 8 = all joints
+        enable.data = 1
+        self._call_sync(self.motion_enable_client, enable, 'motion_enable')
+
+        mode = SetInt16.Request()
+        mode.data = 1          # servo mode, what ros2_control drives
+        self._call_sync(self.set_mode_client, mode, 'set_mode')
+
+        state = SetInt16.Request()
+        state.data = 0         # 0 = ready to move
+        self._call_sync(self.set_state_client, state, 'set_state')
+        time.sleep(0.5)
+
+        if self.is_controller_active() is False:
+            switch = SwitchController.Request()
+            switch.activate_controllers = ['xarm6_traj_controller']
+            switch.strictness = SwitchController.Request.BEST_EFFORT
+            switch.activate_asap = True
+            self._call_sync(self.switch_ctrl_client, switch, 'switch_controller')
+            time.sleep(0.5)
+
+        active = self.is_controller_active()
+        if active:
+            self.get_logger().info('   ✓ 已恢复：错误已清除，轨迹控制器重新激活')
+            return True
+        self.get_logger().error(
+            '   ✗ 自动恢复未成功，需手动处理（见文档 14.10 节）'
+        )
+        return False
 
     def joint_state_callback(self, msg: JointState):
         """Cache the arm joint angles, indexed by name.
@@ -480,9 +603,16 @@ class ArmMotionPlannerNode(Node):
         return None
 
     def move_ptp(self, target_pose: Pose, strict_orientation=True) -> bool:
-        """点到点规划 (通用)"""
+        """点到点规划 (通用)。控制器故障时自动恢复并重试一次。"""
         with self.motion_lock:
-            return self._move_ptp_locked(target_pose, strict_orientation)
+            if self._move_ptp_locked(target_pose, strict_orientation):
+                return True
+            # A fault deactivates the controller, so every later goal fails
+            # with the same error. Recover once, then retry.
+            if self.is_controller_active() is False and self.recover_from_fault():
+                self.get_logger().info('   恢复后重试本次 PTP...')
+                return self._move_ptp_locked(target_pose, strict_orientation)
+            return False
 
     def _move_ptp_locked(self, target_pose: Pose, strict_orientation=True) -> bool:
         if not self.move_group_client.wait_for_server(2.0): return False
@@ -539,9 +669,15 @@ class ArmMotionPlannerNode(Node):
         mapping = { -1: "PLANNING_FAILED", -4: "CONTROL_FAILED", -10: "START_STATE_IN_COLLISION", -12: "GOAL_IN_COLLISION" }
         return mapping.get(val, f"Code {val}")
 
-    def move_joints(self, joints):
+    def move_joints(self, joints, allow_recover=True):
         with self.motion_lock:
-            return self._move_joints_locked(joints)
+            if self._move_joints_locked(joints):
+                return True
+            if allow_recover and self.is_controller_active() is False \
+                    and self.recover_from_fault():
+                self.get_logger().info('   恢复后重试本次关节运动...')
+                return self._move_joints_locked(joints)
+            return False
 
     def _move_joints_locked(self, joints):
         if not self.move_group_client.wait_for_server(2.0): return False
@@ -674,7 +810,15 @@ class ArmMotionPlannerNode(Node):
                 f'({self.gripper_close_pos:.3f} rad)'
             )
             self.gripper_control(self.gripper_close_pos)
-            time.sleep(0.8)
+            # Wait for the jaws to actually clamp before applying any torque.
+            # Twisting against a half-closed gripper shears on a loose grip.
+            self.get_logger().info(f'   夹持稳定中 {self.grip_settle_s:.1f}s...')
+            time.sleep(self.grip_settle_s)
+
+            # Declare the payload before moving again. Without this the
+            # controller feed-forwards zero load and the extra current from
+            # carrying the fruit trips C31 partway home.
+            self.set_payload(self.payload_kg)
 
             # STAGE 2.5: 拧转摘果。夹爪保持闭合，只转 joint6 把果柄扭断，
             # 比直接往后拉更不容易把果子拽坏或带动整根枝条。
@@ -699,10 +843,21 @@ class ArmMotionPlannerNode(Node):
 
             self.get_logger().info('>>> 抓取完成')
             self.gripper_control(self.gripper_open_pos)
+            time.sleep(0.5)
+            # Payload is only cleared after the fruit is actually released,
+            # otherwise the last motion runs under the wrong compensation.
+            self.set_payload(0.0)
 
         except Exception as e:
             self.get_logger().error(f'执行异常: {e}')
         finally:
+            # Never leave the arm faulted: the next trigger would fail on an
+            # inactive controller with no obvious reason why.
+            try:
+                if self.is_controller_active() is False:
+                    self.recover_from_fault()
+            except Exception as exc:
+                self.get_logger().warn(f'收尾恢复检查失败: {exc}')
             self.is_executing = False
             self.is_cooling_down = True
             time.sleep(self.cooldown_duration)
@@ -746,6 +901,25 @@ class ArmMotionPlannerNode(Node):
         )
         self.get_logger().info(res.message)
         return res
+    def recover_arm_callback(self, req, res):
+        """Clear an xArm fault and re-activate the trajectory controller."""
+        if self.is_executing:
+            res.success = False
+            res.message = '正在执行抓取，请稍后再恢复'
+            return res
+        active = self.is_controller_active()
+        if active:
+            self.set_payload(0.0)
+            res.success = True
+            res.message = '控制器本来就是 active，已顺带清零负载'
+            return res
+        ok = self.recover_from_fault()
+        if ok:
+            self.set_payload(0.0)
+        res.success = bool(ok)
+        res.message = '已恢复并清零负载' if ok else '恢复失败，需手动处理'
+        return res
+
     def gripper_open_callback(self, req, res):
         self.gripper_control(self.gripper_open_pos); res.success=True; return res
 

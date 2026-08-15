@@ -1039,6 +1039,8 @@ AUTO_EXECUTE=true ./start_peach_grasp.sh
 | `TWIST_ENABLE` | `true` | 夹住后转 joint6 拧下果子 |
 | `TWIST_DEG` | `45.0` | joint6 单侧拧转幅度 (deg) |
 | `TWIST_CYCLES` | `2` | 拧转轮数 |
+| `GRIP_SETTLE_S` | `1.0` | 闭合夹爪后等待夹持稳定的时间 (s) |
+| `PAYLOAD_KG` | `0.3` | 果子重量 (kg)，用于力矩补偿，防误报 C31 |
 | `ROBOT_IP` | `192.168.1.242` | 机械臂 IP |
 
 ```bash
@@ -1096,7 +1098,7 @@ SHOW=false ./start_peach_grasp.sh
 | 预检 | 校验 A/B 限位与可达性 |
 | STAGE 1 | PTP 到 Point A（目标后方 27 cm），张开夹爪 |
 | STAGE 2 | 前进 8 cm 到 Point B，继承 A 点实际姿态，闭合夹爪至 42° |
-| STAGE 2.5 | 拧转摘果：只转 joint6，±45° × 2 轮，把果柄扭断 |
+| STAGE 2.5 | 夹持稳定 1 s → 申报负载 → 拧转摘果：只转 joint6，±45° × 2 轮 |
 | STAGE 3 | PTP 退回 Point A |
 | STAGE 4 | 关节运动回 hold-up 位（相机正视前方，便于找下一个目标），松开夹爪 |
 
@@ -1117,6 +1119,9 @@ Point B 前进量比后退量少 2 cm，终点停在 `target.x - 0.19`，避免�
 
 **STAGE 2.5 拧转摘果。** 夹爪保持闭合，只转动 joint6（腕部滚转），用扭断代替
 拉断。直接往后拉容易把果子拽坏或带动整根枝条，扭转则让果柄在最薄弱处断开。
+
+闭合夹爪后先等 `GRIP_SETTLE_S`（默认 1 s）让夹爪真正夹紧再施加扭矩。夹爪还在
+合的过程中就拧，等于在松夹持上剪切，果子会打滑甚至被甩掉。
 
 单轮动作是 `正转 +45° → 反转 -45° → 回到起始角`，默认两轮。几个要点：
 
@@ -1153,7 +1158,43 @@ STAGE 2 刻意继承 A 点实际姿态而不强行修正到理想姿态：实测
 另外 shave 数并非越多越好：实测 5 shaves 为 20.2 fps，10 shaves 反而降到
 13.2 fps，因为 shave 会与 ISP 争抢 CMX 资源。
 
-### 14.9 不要留下两个规划节点
+### 14.9 负载申报与 C31 故障自动恢复
+
+抓到果子后回程失败，看起来像"力气不够走不回来"，实际是**故障跳闸**。日志里的
+根因是：
+
+```text
+UFACTORY Error detected! Code C31 -> [ Collision Caused Abnormal Joint Current ]
+Deactivating controllers: [ xarm6_traj_controller ]
+Can't accept new action goals. Controller is not running.
+```
+
+xArm 按"当前负载"前馈关节力矩。夹着果子但控制器仍以为负载为零时，多出来的电流
+被判成碰撞，触发 C31。**关键在于 C31 会让驱动把 `xarm6_traj_controller` 停用**，
+此后每一条轨迹都被拒（`Controller is not running`），于是 STAGE 3 退回、
+STAGE 4 回零位连续失败 —— 不是没力气，是控制器已经下线。
+
+两项处理：
+
+- **申报负载**：夹紧后调 `/xarm/set_tcp_load` 告知重量（`PAYLOAD_KG`，默认
+  0.3 kg），力矩补偿正确后就不会误判。果子松开后才清零，避免最后一段运动用
+  错误的补偿值
+- **自动恢复**：`move_ptp` / `move_joints` 失败后会检查控制器状态，若已停用则
+  依次 `clean_error` → `motion_enable` → `set_mode(1)` → `set_state(0)` →
+  `switch_controller` 重新激活，然后重试一次。抓取收尾也会兜底检查一遍，
+  不会把机械臂留在"死"状态
+
+手动恢复入口：
+
+```bash
+cd ~/ros2_ws
+./start_peach_grasp.sh recover
+```
+
+果子明显更重时把 `PAYLOAD_KG` 调大，例如 `PAYLOAD_KG=0.5 ./start_peach_grasp.sh`。
+估重偏小仍可能触发 C31，偏大则会让碰撞检测变钝，按实际重量填。
+
+### 14.10 不要留下两个规划节点
 
 `CONTROL_FAILED` 最常见的原因不是机械臂坏了，而是**同时有两个
 `arm_motion_planner_node` 在向 MoveIt 发轨迹**。MoveIt 对第二个轨迹直接回
@@ -1177,7 +1218,7 @@ STAGE 2 刻意继承 A 点实际姿态而不强行修正到理想姿态：实测
 
 `stop` 只匹配 xArm 相关进程名，不会影响底盘 Domain 20 的节点。
 
-### 14.10 故障排查
+### 14.11 故障排查
 
 | 现象 | 原因与处理 |
 |---|---|
@@ -1185,7 +1226,9 @@ STAGE 2 刻意继承 A 点实际姿态而不强行修正到理想姿态：实测
 | 一直 `TARGET SETTLING` | 目标在动或深度不稳；放稳目标，距离控制在 300–450 mm |
 | `没有可用目标点` | 检测未稳定，或点被限位拒绝，看规划节点日志的限位告警 |
 | `Point B 不可达` | 目标在工作空间边缘，把目标往底座方向挪近 |
-| `CONTROL_FAILED` | 先查是否有两个规划节点在抢（见 14.9）；确认唯一后再清错误重新使能 |
+| `CONTROL_FAILED` | 先查是否有两个规划节点在抢（见 14.10）；确认唯一后再清错误重新使能 |
+| `C31` / `Controller is not running` | 负载未申报导致故障跳闸，控制器已停用。跑 `./start_peach_grasp.sh recover`，并按实际果重调 `PAYLOAD_KG` |
+| 拧转时果子打滑 | 加大 `GRIP_SETTLE_S`，或把 `GRIPPER_CLOSE_DEG` 上调 1–2° |
 
 机械臂报错后恢复：
 
@@ -1206,7 +1249,7 @@ ros2 service call /xarm/set_state xarm_msgs/srv/SetInt16 "{data: 0}"
 日志按启动时间保存在 `log/peach_grasp_<时间戳>/`，分
 `1_moveit.log`、`2_vision.log`、`3_planner.log`。
 
-### 14.11 脚本模式速查
+### 14.12 脚本模式速查
 
 | 命令 | 作用 |
 |---|---|
@@ -1215,11 +1258,12 @@ ros2 service call /xarm/set_state xarm_msgs/srv/SetInt16 "{data: 0}"
 | `./start_peach_grasp.sh check` | 只做七项环境自检 |
 | `./start_peach_grasp.sh status` | 查节点/服务在线情况，并抓一帧目标点坐标 |
 | `./start_peach_grasp.sh trigger` | 手动触发一次抓取（自带环境，免手工 source） |
+| `./start_peach_grasp.sh recover` | 清除 xArm 错误并重新激活轨迹控制器 |
 | `./start_peach_grasp.sh stop` | 停视觉与规划，保留 MoveIt |
 | `./start_peach_grasp.sh stop --with-moveit` | 连 MoveIt / ros2_control 一起停 |
 | `./start_peach_grasp.sh help` | 帮助 |
 
-### 14.12 本轮改动记录
+### 14.13 本轮改动记录
 
 按定位到的问题逐条修，都已在真机跑通：
 

@@ -236,6 +236,8 @@ AUTO_EXECUTE=false ./start_peach_grasp.sh   # 主终端
 | `TARGET_LABEL` | `peach` | 目标类别 |
 | `CONFIDENCE` | `0.75` | 检测置信度阈值 |
 | `GRIPPER_CLOSE_DEG` | `42.0` | 夹爪闭合角度，满闭合 48.7 |
+| `TWIST_DEG` | `45.0` | 夹住后 joint6 拧转幅度，用于扭断果柄 |
+| `TWIST_CYCLES` | `2` | 拧转轮数；`TWIST_ENABLE=false` 可关闭 |
 | `MAX_DEPTH_MM` | `700` | 深度上限，掐掉远景误报 |
 
 重启前务必先清干净，否则两个规划节点会同时向 MoveIt 发轨迹，

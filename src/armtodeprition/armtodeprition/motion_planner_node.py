@@ -28,6 +28,7 @@ from tf2_ros.buffer import Buffer
 from tf2_ros.transform_listener import TransformListener
 
 from geometry_msgs.msg import PoseStamped, Pose
+from sensor_msgs.msg import JointState
 from std_srvs.srv import Trigger
 from shape_msgs.msg import SolidPrimitive
 from moveit_msgs.action import MoveGroup, ExecuteTrajectory
@@ -104,6 +105,14 @@ class ArmMotionPlannerNode(Node):
         # held rather than crushed.
         self.declare_parameter('gripper_close_deg', 42.0)
         self.declare_parameter('gripper_open_deg', 0.0)
+        # Twist-off: rotate only joint6 (the wrist roll) while the gripper
+        # holds the fruit, shearing the stem instead of pulling on it.
+        # Pulling straight back tends to either tear the fruit or drag the
+        # whole branch; a twist breaks the stem at its weakest point.
+        self.declare_parameter('twist_enable', True)
+        self.declare_parameter('twist_deg', 45.0)
+        self.declare_parameter('twist_cycles', 2)
+        self.declare_parameter('twist_settle_s', 0.4)
         self.declare_parameter('auto_execute_interval', 3.0)
         self.declare_parameter('target_x_min', 0.10)
         self.declare_parameter('target_x_max', 0.80)
@@ -122,6 +131,10 @@ class ArmMotionPlannerNode(Node):
         # cannot drive the jaws past their mechanical limit.
         self.gripper_close_pos = min(math.radians(self.gripper_close_deg), 0.85)
         self.gripper_open_pos = max(math.radians(self.gripper_open_deg), 0.0)
+        self.twist_enable = self.get_parameter('twist_enable').get_parameter_value().bool_value
+        self.twist_deg = self.get_parameter('twist_deg').get_parameter_value().double_value
+        self.twist_cycles = self.get_parameter('twist_cycles').get_parameter_value().integer_value
+        self.twist_settle_s = self.get_parameter('twist_settle_s').get_parameter_value().double_value
         self.auto_execute_interval = self.get_parameter('auto_execute_interval').get_parameter_value().double_value
         self.target_x_min = self.get_parameter('target_x_min').get_parameter_value().double_value
         self.target_x_max = self.get_parameter('target_x_max').get_parameter_value().double_value
@@ -155,6 +168,15 @@ class ArmMotionPlannerNode(Node):
         self.pose_sub = self.create_subscription(
             PoseStamped, '/target_pose_in_base', self.target_pose_callback, 10, callback_group=self.callback_group
         )
+        # The twist stage needs the live joint6 angle: it rotates relative to
+        # wherever the wrist actually ended up, not to a planned value.
+        self.joint_names = ['joint1', 'joint2', 'joint3', 'joint4', 'joint5', 'joint6']
+        self.current_joints = None
+        self.joint_lock = threading.Lock()
+        self.joint_sub = self.create_subscription(
+            JointState, '/joint_states', self.joint_state_callback, 10,
+            callback_group=self.callback_group
+        )
         if self.auto_execute:
             self.auto_timer = self.create_timer(
               self.auto_execute_interval, self._auto_execute_timer_callback, callback_group=self.callback_group
@@ -178,6 +200,13 @@ class ArmMotionPlannerNode(Node):
             f'夹爪行程: 张开 {self.gripper_open_deg:.0f}° / 闭合 {self.gripper_close_deg:.0f}° '
             f'(满闭合 48.7°)'
         )
+        if self.twist_enable:
+            self.get_logger().info(
+                f'拧转摘果: joint6 ±{self.twist_deg:.0f}° × {self.twist_cycles} 轮, '
+                f'每步停顿 {self.twist_settle_s:.1f}s'
+            )
+        else:
+            self.get_logger().info('拧转摘果: 已关闭')
         self.get_logger().info('Arm Motion Planner (Guarantee Advance) Ready.')
 
     def _assert_single_instance(self):
@@ -274,6 +303,99 @@ class ArmMotionPlannerNode(Node):
         wall.primitives.append(prim); wall.primitive_poses.append(pose)
         scene_msg.world.collision_objects.append(wall)
         self.planning_scene_pub.publish(scene_msg)
+
+    def joint_state_callback(self, msg: JointState):
+        """Cache the arm joint angles, indexed by name.
+
+        /joint_states also carries the gripper joints, so index by name rather
+        than by position: relying on ordering would silently pick up a gripper
+        joint if the publisher ever reorders its arrays.
+        """
+        try:
+            lookup = dict(zip(msg.name, msg.position))
+            values = [lookup[name] for name in self.joint_names]
+        except KeyError:
+            return
+        with self.joint_lock:
+            self.current_joints = values
+
+    def get_current_joints(self, timeout_s=2.0):
+        """Return the latest arm joint angles, waiting briefly if needed."""
+        deadline = time.time() + timeout_s
+        while time.time() < deadline:
+            with self.joint_lock:
+                if self.current_joints is not None:
+                    return list(self.current_joints)
+            time.sleep(0.05)
+        return None
+
+    def twist_off(self):
+        """Shear the stem by rocking joint6 while the gripper stays closed.
+
+        Only joint6 moves, so the gripper stays exactly where it is and the
+        fruit is not dragged sideways. The wrist returns to its starting angle
+        after each cycle to avoid winding up towards the joint limit.
+        """
+        if not self.twist_enable:
+            return True
+        if abs(self.twist_deg) < 0.1 or self.twist_cycles < 1:
+            self.get_logger().info('   拧转幅度或次数为 0，跳过拧转。')
+            return True
+
+        start = self.get_current_joints()
+        if start is None:
+            self.get_logger().warn('拿不到 /joint_states，跳过拧转（不影响后续退回）。')
+            return False
+
+        j6_start = start[5]
+        delta = math.radians(abs(self.twist_deg))
+        # joint6 range is +/-2*pi; clamp so a large twist_deg near the limit
+        # degrades to a smaller twist instead of failing to plan.
+        limit = 2.0 * math.pi - math.radians(5.0)
+        room_pos = max(0.0, limit - j6_start)
+        room_neg = max(0.0, j6_start + limit)
+        reach = min(delta, room_pos, room_neg)
+        if reach < math.radians(1.0):
+            self.get_logger().warn(
+                f'joint6 已接近限位 ({math.degrees(j6_start):.1f}°)，无拧转余量，跳过。'
+            )
+            return False
+        if reach < delta:
+            self.get_logger().warn(
+                f'joint6 余量不足，拧转幅度由 {self.twist_deg:.0f}° 降为 '
+                f'{math.degrees(reach):.0f}°'
+            )
+
+        self.get_logger().info(
+            f'[STAGE 2.5] 拧转摘果: joint6 起始 {math.degrees(j6_start):.1f}°, '
+            f'±{math.degrees(reach):.0f}° × {self.twist_cycles} 轮'
+        )
+
+        for cycle in range(self.twist_cycles):
+            for direction, tag in ((+1.0, '正转'), (-1.0, '反转')):
+                target = list(start)
+                target[5] = j6_start + direction * reach
+                if not self.move_joints(target):
+                    self.get_logger().warn(
+                        f'   第 {cycle + 1} 轮 {tag} 失败，停止拧转并继续退回。'
+                    )
+                    # Always try to restore the starting angle: leaving the
+                    # wrist twisted would make the retreat path unpredictable.
+                    self.move_joints(start)
+                    return False
+                self.get_logger().info(
+                    f'   第 {cycle + 1}/{self.twist_cycles} 轮 {tag} '
+                    f'{direction * math.degrees(reach):+.0f}°'
+                )
+                time.sleep(self.twist_settle_s)
+
+            if not self.move_joints(start):
+                self.get_logger().warn('   回中失败，停止拧转并继续退回。')
+                return False
+            time.sleep(self.twist_settle_s)
+
+        self.get_logger().info('   ✓ 拧转完成，joint6 已回到起始角')
+        return True
 
     def target_pose_callback(self, msg: PoseStamped):
         if not self.is_executing and not self.is_cooling_down:
@@ -553,6 +675,11 @@ class ArmMotionPlannerNode(Node):
             )
             self.gripper_control(self.gripper_close_pos)
             time.sleep(0.8)
+
+            # STAGE 2.5: 拧转摘果。夹爪保持闭合，只转 joint6 把果柄扭断，
+            # 比直接往后拉更不容易把果子拽坏或带动整根枝条。
+            # 拧转失败不视为抓取失败：果子可能已经夹住，仍然继续退回。
+            self.twist_off()
 
             # STAGE 3: PTP 后退
             self.get_logger().info(f'[STAGE 3] PTP 退回 Point A (X={current_pose_a.position.x:.3f})')

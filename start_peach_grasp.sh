@@ -25,6 +25,10 @@ SHOW="${SHOW:-true}"
 AUTO_EXECUTE="${AUTO_EXECUTE:-true}"
 # 夹爪闭合角度 (deg)。MoveIt 界面 0=全张, 48.7=全闭。
 GRIPPER_CLOSE_DEG="${GRIPPER_CLOSE_DEG:-42.0}"
+# 拧转摘果：夹住后只转 joint6 把果柄扭断。
+TWIST_ENABLE="${TWIST_ENABLE:-true}"
+TWIST_DEG="${TWIST_DEG:-45.0}"
+TWIST_CYCLES="${TWIST_CYCLES:-2}"
 # ==================================================
 
 export ROS_DOMAIN_ID=40
@@ -54,6 +58,9 @@ usage() {
   SHOW=false          不开预览窗口
   CONFIDENCE=0.9      提高置信度阈值（默认 0.75）
   GRIPPER_CLOSE_DEG=45 夹爪闭合角度 deg（默认 42，满闭合 48.7）
+  TWIST_DEG=60        joint6 拧转幅度 deg（默认 45）
+  TWIST_CYCLES=3      拧转轮数（默认 2）
+  TWIST_ENABLE=false  关闭拧转
 
 示例:
   ./start_peach_grasp.sh                    # 全部启动，手动触发抓取
@@ -283,9 +290,17 @@ start_planner() {
     else
         ok "自动抓取关闭，需手动调用 /execute_grasp 触发"
     fi
+    if [ "$TWIST_ENABLE" = "true" ]; then
+        echo "      拧转摘果: joint6 ±${TWIST_DEG}° × ${TWIST_CYCLES} 轮"
+    else
+        echo "      拧转摘果: 已关闭"
+    fi
     ros2 launch armtodeprition motion_planner.launch.py \
         auto_execute:="$AUTO_EXECUTE" \
         gripper_close_deg:="$GRIPPER_CLOSE_DEG" \
+        twist_enable:="$TWIST_ENABLE" \
+        twist_deg:="$TWIST_DEG" \
+        twist_cycles:="$TWIST_CYCLES" \
         > "$LOG_DIR/3_planner.log" 2>&1 &
     PIDS+=($!)
 

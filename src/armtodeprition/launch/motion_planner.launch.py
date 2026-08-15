@@ -43,6 +43,26 @@ def generate_launch_description():
             description='夹爪张开角度 (deg)'
         ),
         DeclareLaunchArgument(
+            'twist_enable',
+            default_value='true',
+            description='夹住后转 joint6 拧下果子'
+        ),
+        DeclareLaunchArgument(
+            'twist_deg',
+            default_value='45.0',
+            description='joint6 单侧拧转幅度 (deg)'
+        ),
+        DeclareLaunchArgument(
+            'twist_cycles',
+            default_value='2',
+            description='拧转轮数，每轮为正转->反转->回中'
+        ),
+        DeclareLaunchArgument(
+            'twist_settle_s',
+            default_value='0.4',
+            description='每步拧转后的停顿 (s)'
+        ),
+        DeclareLaunchArgument(
             'approach_height',
             default_value='0.05',
             description='接近高度 (m)'
@@ -89,6 +109,10 @@ def generate_launch_description():
                 'end_effector_link': LaunchConfiguration('end_effector_link'),
                 'auto_execute': LaunchConfiguration('auto_execute'),
                 'gripper_close_deg': LaunchConfiguration('gripper_close_deg'),
+                'twist_enable': LaunchConfiguration('twist_enable'),
+                'twist_deg': LaunchConfiguration('twist_deg'),
+                'twist_cycles': LaunchConfiguration('twist_cycles'),
+                'twist_settle_s': LaunchConfiguration('twist_settle_s'),
                 'gripper_open_deg': LaunchConfiguration('gripper_open_deg'),
                 'auto_execute_interval': LaunchConfiguration('auto_execute_interval'),
                 'approach_height': LaunchConfiguration('approach_height'),

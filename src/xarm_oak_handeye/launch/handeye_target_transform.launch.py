@@ -29,7 +29,7 @@ def generate_launch_description():
             default_value="true",
             description="also start the OAK NPU detector on /oak_result",
         ),
-        DeclareLaunchArgument("confidence", default_value="0.75"),
+        DeclareLaunchArgument("confidence", default_value="0.65"),
         DeclareLaunchArgument("fps", default_value="18.0"),
         DeclareLaunchArgument("preview_fps", default_value="5.0"),
         DeclareLaunchArgument("fullscreen", default_value="true"),
@@ -40,6 +40,11 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument("min_depth_mm", default_value="150.0"),
         DeclareLaunchArgument("max_depth_mm", default_value="700.0"),
+        DeclareLaunchArgument(
+            "track_tolerance_mm",
+            default_value="60.0",
+            description="视为同一目标的最大帧间跳变，超过则重新判稳",
+        ),
         Node(
             package="xarm_oak_handeye",
             executable="publish_handeye_tf",
@@ -65,6 +70,7 @@ def generate_launch_description():
                 "--fps", LaunchConfiguration("fps"),
                 "--preview-fps", LaunchConfiguration("preview_fps"),
                 "--fullscreen", LaunchConfiguration("fullscreen"),
+                "--track-tolerance-mm", LaunchConfiguration("track_tolerance_mm"),
             ],
         ),
         Node(

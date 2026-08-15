@@ -10,10 +10,18 @@ Depth is reduced on the host (robust median inside a shrunken box) rather
 than with SpatialLocationCalculator: that node ignores runtime ROI configs
 on depthai 3.8 here, and blocks the camera when it waits for a message.
 
+When several targets are in view, the nearest one (smallest camera-frame
+range) is selected and the rest are only drawn, never published. Publishing
+every detection would leave the arm acting on whichever box the loop
+happened to visit last.
+
 A detection is only published once it has held still for --stable-frames
 consecutive frames within --stable-tolerance-mm. Neural detections jitter
 by nature, and downstream this topic drives real arm motion, so a single
-noisy frame must never be able to command a move.
+noisy frame must never be able to command a move. The stability window
+follows the selected target: if the nearest target changes to a different
+object, the window is cleared and settling restarts, so points belonging to
+two different fruits are never averaged together.
 
 Detection and depth run at --fps, while the preview is a separate low-rate
 stream at --preview-fps. On USB2 the detection path saturates around 18 fps,
@@ -25,6 +33,7 @@ cached and redrawn on the newest preview frame between preview updates.
 from __future__ import annotations
 
 import argparse
+import math
 from collections import deque
 
 import cv2
@@ -88,7 +97,9 @@ class OakPeachDetector(Node):
             f"{args.target_label or '<any>'}; depth window "
             f"{args.min_depth_mm}-{args.max_depth_mm} mm; "
             f"stability {args.stable_frames} frames within "
-            f"{args.stable_tolerance_mm} mm"
+            f"{args.stable_tolerance_mm} mm; "
+            f"multi-target: nearest wins, re-settle beyond "
+            f"{args.track_tolerance_mm} mm"
         )
 
     def _build_pipeline(self):
@@ -168,14 +179,47 @@ class OakPeachDetector(Node):
         self.preview_transform = None
         self.display = None
         self.display_count = 0
-        # rolling window of recent camera-frame points for the stability gate
+        # rolling window of recent camera-frame points for the stability gate.
+        # It belongs to one tracked target; see _select_nearest.
         self.history = deque(maxlen=self.args.stable_frames)
         self.stable = False
+        self.tracked_xyz = None
         self.overlay = []
         self.get_logger().info(
             f"pipeline started; fx={self.fx:.2f} fy={self.fy:.2f} "
             f"cx={self.cx:.2f} cy={self.cy:.2f}"
         )
+
+    def _select_nearest(self, candidates):
+        """Pick the closest candidate and keep the stability window coherent.
+
+        The window averages the last N frames, so it must describe one object.
+        A target is treated as the same one across frames when it stays within
+        --track-tolerance-mm of the tracked point; otherwise the window is
+        cleared and settling restarts from scratch.
+
+        Nearest wins by straight-line camera range. A closer fruit is both the
+        easier grasp and the one that would obstruct reaching past it.
+        """
+        if not candidates:
+            return None
+
+        chosen = min(candidates, key=lambda item: item["range_mm"])
+
+        if self.tracked_xyz is not None:
+            moved = math.dist(chosen["xyz"], self.tracked_xyz)
+            if moved > self.args.track_tolerance_mm:
+                # Different object now closest: never average across the swap.
+                self.history.clear()
+                self.stable = False
+                if len(candidates) > 1:
+                    self.get_logger().info(
+                        f"切换到更近的目标: range {chosen['range_mm']:.0f}mm "
+                        f"(跳变 {moved:.0f}mm > {self.args.track_tolerance_mm:.0f}mm)，"
+                        f"重新判稳"
+                    )
+        self.tracked_xyz = chosen["xyz"]
+        return chosen
 
     def poll(self):
         if self.pipeline is None or not self.pipeline.isRunning():
@@ -222,6 +266,10 @@ class OakPeachDetector(Node):
             self.frames += 1
             nn_transform = detections.getTransformation()
             nn_w, nn_h = nn_transform.getSize()
+
+            # Pass 1: measure every candidate. Selection needs all the ranges
+            # before it can pick one, so nothing is published inside this loop.
+            candidates = []
             for det in detections.detections:
                 if self.args.target_label and det.labelName != self.args.target_label:
                     continue
@@ -247,6 +295,40 @@ class OakPeachDetector(Node):
                 vcy = (py0 + py1) / 2.0
                 x_mm = (ucx - self.cx) * z_mm / self.fx
                 y_mm = (vcy - self.cy) * z_mm / self.fy
+                candidates.append({
+                    "box": (px0, py0, px1, py1),
+                    "centre": (ucx, vcy),
+                    "label": det.labelName,
+                    "confidence": det.confidence,
+                    "xyz": (x_mm, y_mm, z_mm),
+                    "range_mm": math.sqrt(x_mm * x_mm + y_mm * y_mm + z_mm * z_mm),
+                })
+
+            hits = len(candidates)
+            if not candidates:
+                # Every box failed the depth gate: same as having no target.
+                self.history.clear()
+                self.tracked_xyz = None
+                self.stable = False
+
+            chosen = self._select_nearest(candidates)
+
+            for item in candidates:
+                if item is not chosen:
+                    # Drawn only. Reaching for a farther fruit while a nearer
+                    # one is in the way is how the gripper knocks things over.
+                    self.overlay.append({
+                        **item,
+                        "stable": False,
+                        "selected": False,
+                        "note": f"range {item['range_mm']:.0f}mm (not nearest)",
+                    })
+
+            if chosen is not None:
+                px0, py0, px1, py1 = chosen["box"]
+                ucx, vcy = chosen["centre"]
+                x_mm, y_mm, z_mm = chosen["xyz"]
+                others = hits - 1
 
                 # Gate: only publish a point that has held still, so a
                 # single jittery frame cannot command arm motion.
@@ -259,7 +341,6 @@ class OakPeachDetector(Node):
                         np.linalg.norm(points.max(axis=0) - points.min(axis=0))
                     )
                     self.stable = spread_mm <= self.args.stable_tolerance_mm
-                hits += 1
                 if not self.stable:
                     self.rejected += 1
                     need = self.history.maxlen - len(self.history)
@@ -269,41 +350,41 @@ class OakPeachDetector(Node):
                         else f"jitter {spread_mm:.0f}mm > "
                         f"{self.args.stable_tolerance_mm:.0f}mm"
                     )
+                    if others:
+                        note += f" | nearest of {hits}"
                     self.overlay.append({
-                        "box": (px0, py0, px1, py1),
-                        "centre": (ucx, vcy),
-                        "label": det.labelName,
-                        "confidence": det.confidence,
-                        "xyz": (x_mm, y_mm, z_mm),
+                        **chosen,
                         "stable": False,
+                        "selected": True,
                         "note": note,
                     })
-                    continue
-
-                # Publish the window average: steadier than the newest frame.
-                x_mm, y_mm, z_mm = np.array(self.history).mean(axis=0)
-                message = String()
-                message.data = (
-                    f"{det.labelName},{det.confidence:.4f},"
-                    f"{x_mm:.2f},{y_mm:.2f},{z_mm:.2f}"
-                )
-                self.publisher.publish(message)
-                self.published += 1
-                if self.published % 15 == 1:
-                    self.get_logger().info(
-                        f"{det.labelName} conf={det.confidence:.2f} "
-                        f"camera XYZ=({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}) mm "
-                        f"(stable, spread {spread_mm:.1f} mm)"
+                else:
+                    # Publish the window average: steadier than the newest frame.
+                    x_mm, y_mm, z_mm = np.array(self.history).mean(axis=0)
+                    message = String()
+                    message.data = (
+                        f"{chosen['label']},{chosen['confidence']:.4f},"
+                        f"{x_mm:.2f},{y_mm:.2f},{z_mm:.2f}"
                     )
-                self.overlay.append({
-                    "box": (px0, py0, px1, py1),
-                    "centre": (ucx, vcy),
-                    "label": det.labelName,
-                    "confidence": det.confidence,
-                    "xyz": (x_mm, y_mm, z_mm),
-                    "stable": True,
-                    "note": f"spread {spread_mm:.0f}mm",
-                })
+                    self.publisher.publish(message)
+                    self.published += 1
+                    if self.published % 15 == 1:
+                        extra = f", nearest of {hits}" if others else ""
+                        self.get_logger().info(
+                            f"{chosen['label']} conf={chosen['confidence']:.2f} "
+                            f"camera XYZ=({x_mm:.1f}, {y_mm:.1f}, {z_mm:.1f}) mm "
+                            f"(stable, spread {spread_mm:.1f} mm{extra})"
+                        )
+                    note = f"spread {spread_mm:.0f}mm"
+                    if others:
+                        note += f" | nearest of {hits}"
+                    self.overlay.append({
+                        **chosen,
+                        "xyz": (x_mm, y_mm, z_mm),
+                        "stable": True,
+                        "selected": True,
+                        "note": note,
+                    })
 
         if frame is not None:
             hits = len(self.overlay)
@@ -314,9 +395,17 @@ class OakPeachDetector(Node):
                 bx0, bx1 = bx0 * scale_x, bx1 * scale_x
                 by0, by1 = by0 * scale_y, by1 * scale_y
                 ccx, ccy = item["centre"][0] * scale_x, item["centre"][1] * scale_y
-                colour = (0, 255, 0) if item["stable"] else (0, 165, 255)
+                # Grey = seen but not selected, so it is obvious at a glance
+                # which fruit the arm is going for when several are in view.
+                if not item.get("selected", True):
+                    colour = (150, 150, 150)
+                elif item["stable"]:
+                    colour = (0, 255, 0)
+                else:
+                    colour = (0, 165, 255)
                 cv2.rectangle(
-                    frame, (int(bx0), int(by0)), (int(bx1), int(by1)), colour, 3
+                    frame, (int(bx0), int(by0)), (int(bx1), int(by1)), colour,
+                    3 if item.get("selected", True) else 2,
                 )
                 cv2.circle(frame, (int(ccx), int(ccy)), 5, (0, 0, 255), -1)
                 cv2.putText(
@@ -343,6 +432,8 @@ class OakPeachDetector(Node):
                 banner, colour = "TARGET SETTLING", (0, 165, 255)
             else:
                 banner, colour = "NO TARGET", (0, 165, 255)
+            if hits > 1:
+                banner += f"  ({hits} seen, nearest selected)"
             cv2.putText(
                 frame, banner, (14, 42),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.1, colour, 3,
@@ -352,6 +443,7 @@ class OakPeachDetector(Node):
                 f"conf>={self.args.confidence:.2f} "
                 f"depth {self.args.min_depth_mm:.0f}-{self.args.max_depth_mm:.0f}mm "
                 f"stable {self.args.stable_frames}f/{self.args.stable_tolerance_mm:.0f}mm "
+                f"track {self.args.track_tolerance_mm:.0f}mm "
                 f"nn~{self.args.fps:.0f}fps preview~{self.args.preview_fps:.0f}fps "
                 f"published={self.published} held={self.rejected}",
                 (14, frame.shape[0] - 16),
@@ -400,7 +492,7 @@ def main(argv=None):
     )
     parser.add_argument("--output-topic", default="/oak_result")
     parser.add_argument("--target-label", default="")
-    parser.add_argument("--confidence", type=float, default=0.75)
+    parser.add_argument("--confidence", type=float, default=0.65)
     parser.add_argument(
         "--fps", type=float, default=18.0,
         help="detection and depth rate; USB2 saturates near 18",
@@ -428,6 +520,12 @@ def main(argv=None):
     parser.add_argument(
         "--stable-tolerance-mm", type=float, default=15.0,
         help="maximum spread across that window",
+    )
+    parser.add_argument(
+        "--track-tolerance-mm", type=float, default=60.0,
+        help="how far the nearest target may move between frames and still "
+             "count as the same object; beyond this the stability window is "
+             "cleared so two fruits are never averaged together",
     )
     parser.add_argument(
         "--show",

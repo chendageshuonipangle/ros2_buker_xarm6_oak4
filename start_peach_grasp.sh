@@ -13,7 +13,10 @@ set -o pipefail
 # ==================== 可调参数 ====================
 ROBOT_IP="${ROBOT_IP:-192.168.1.242}"
 TARGET_LABEL="${TARGET_LABEL:-peach}"
-CONFIDENCE="${CONFIDENCE:-0.75}"
+CONFIDENCE="${CONFIDENCE:-0.65}"
+# 视野里有多个目标时抓最近的那个。超过这个帧间跳变判为换了目标，重新判稳，
+# 避免把两个果子的坐标平均到一起。
+TRACK_TOLERANCE_MM="${TRACK_TOLERANCE_MM:-60.0}"
 # 检测/深度帧率。USB2 实测上限约 18；接 USB3 后可设 30。
 FPS="${FPS:-18.0}"
 PREVIEW_FPS="${PREVIEW_FPS:-5.0}"
@@ -73,7 +76,9 @@ usage() {
   TARGET_LABEL=peach  目标类别
   FPS=30.0            检测帧率（换 USB3 后可用）
   SHOW=false          不开预览窗口
-  CONFIDENCE=0.9      提高置信度阈值（默认 0.75）
+  CONFIDENCE=0.9      提高置信度阈值（默认 0.65）
+  TRACK_TOLERANCE_MM=80
+                      多目标时判定"还是同一个目标"的帧间跳变上限 mm（默认 60）
   GRIPPER_CLOSE_DEG=45 夹爪闭合角度 deg（默认 42，满闭合 48.7）
   TWIST_DEG=60        joint6 拧转幅度 deg（默认 45）
   TWIST_CYCLES=3      拧转轮数（默认 2）
@@ -304,9 +309,11 @@ start_moveit() {
 start_vision() {
     log "[2/4] 启动手眼标定 TF + NPU 检测 (label=$TARGET_LABEL, conf=$CONFIDENCE)"
     echo "      检测 ${FPS}fps / 预览 ${PREVIEW_FPS}fps / 深度窗口 ${MIN_DEPTH_MM}-${MAX_DEPTH_MM}mm"
+    echo "      多目标: 抓最近的那个 (跳变 >${TRACK_TOLERANCE_MM}mm 视为换目标，重新判稳)"
     ros2 launch xarm_oak_handeye handeye_target_transform.launch.py \
         target_label:="$TARGET_LABEL" \
         confidence:="$CONFIDENCE" \
+        track_tolerance_mm:="$TRACK_TOLERANCE_MM" \
         fps:="$FPS" \
         preview_fps:="$PREVIEW_FPS" \
         min_depth_mm:="$MIN_DEPTH_MM" \
@@ -381,7 +388,7 @@ monitor() {
     echo "  实时状态 (Ctrl+C 退出全部)"
     echo "=========================================="
     echo ""
-    echo "预览窗口: 绿框=目标稳定可抓, 橙框=抖动中(已拦下)"
+    echo "预览窗口: 绿框=目标稳定可抓, 橙框=抖动中(已拦下), 灰框=看见但不是最近的"
     echo "          按 f 切换全屏, 按 q 关预览(检测继续)"
     echo ""
     if [ "$AUTO_EXECUTE" = "true" ]; then

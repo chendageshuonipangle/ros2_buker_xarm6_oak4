@@ -123,6 +123,21 @@ def generate_launch_description():
             description='超限告警最小间隔 (s)，防止按检测帧率刷屏'
         ),
         DeclareLaunchArgument(
+            'pose_reach_tolerance_m',
+            default_value='0.02',
+            description='PTP 到位判定容差 (m)；超差视为未到位并回家'
+        ),
+        DeclareLaunchArgument(
+            'lateral_error_max_m',
+            default_value='0.05',
+            description='Point A 实际 Y/Z 相对目标的最大横向偏离 (m)'
+        ),
+        DeclareLaunchArgument(
+            'idle_home_timeout_s',
+            default_value='20.0',
+            description='空闲且不在 hold-up 位多久后自动回家 (s)，0 关闭'
+        ),
+        DeclareLaunchArgument(
             'target_y_min',
             default_value='-0.50',
             description='目标点 Y 最小限位 (m)'
@@ -172,6 +187,9 @@ def generate_launch_description():
                 'target_x_max': LaunchConfiguration('target_x_max'),
                 'arm_x_max': LaunchConfiguration('arm_x_max'),
                 'limit_log_period_s': LaunchConfiguration('limit_log_period_s'),
+                'pose_reach_tolerance_m': LaunchConfiguration('pose_reach_tolerance_m'),
+                'lateral_error_max_m': LaunchConfiguration('lateral_error_max_m'),
+                'idle_home_timeout_s': LaunchConfiguration('idle_home_timeout_s'),
                 'target_y_min': LaunchConfiguration('target_y_min'),
                 'target_y_max': LaunchConfiguration('target_y_max'),
                 'target_z_min': LaunchConfiguration('target_z_min'),

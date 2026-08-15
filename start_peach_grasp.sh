@@ -46,6 +46,12 @@ LOADED_ACCELERATION_SCALE="${LOADED_ACCELERATION_SCALE:-0.08}"
 TARGET_X_MAX="${TARGET_X_MAX:-0.95}"
 # TCP 自身 X 上限，约束 Point A/B，这条才是真正守可达性的。
 ARM_X_MAX="${ARM_X_MAX:-0.80}"
+# PTP 到位容差；MoveIt 报成功不等于真到了（C31 中断轨迹时臂会停在半路）。
+POSE_REACH_TOLERANCE_M="${POSE_REACH_TOLERANCE_M:-0.02}"
+# Point A 实际落点相对果子的横向偏离上限，超了前进就是抓空。
+LATERAL_ERROR_MAX_M="${LATERAL_ERROR_MAX_M:-0.05}"
+# 空闲且不在 hold-up 位多久后自动回家，防止歪着卡死看不到工作区。0 关闭。
+IDLE_HOME_TIMEOUT_S="${IDLE_HOME_TIMEOUT_S:-20.0}"
 # ==================================================
 
 export ROS_DOMAIN_ID=40
@@ -93,6 +99,12 @@ usage() {
                       带果子回程速度比例（默认 0.15）
   TARGET_X_MAX=1.0    果子 X 上限 m（默认 0.95，臂停在 target.x-0.27）
   ARM_X_MAX=0.85      TCP 自身 X 上限 m（默认 0.80，约束 Point A/B）
+  POSE_REACH_TOLERANCE_M=0.03
+                      PTP 到位容差 m（默认 0.02，超差判未到位并回家）
+  LATERAL_ERROR_MAX_M=0.08
+                      Point A 横向偏离果子的上限 m（默认 0.05）
+  IDLE_HOME_TIMEOUT_S=0
+                      关闭空闲自动回家（默认 20s 后回 hold-up）
 
 示例:
   ./start_peach_grasp.sh                    # 全部启动，手动触发抓取
@@ -367,6 +379,9 @@ start_planner() {
         loaded_acceleration_scale:="$LOADED_ACCELERATION_SCALE" \
         target_x_max:="$TARGET_X_MAX" \
         arm_x_max:="$ARM_X_MAX" \
+        pose_reach_tolerance_m:="$POSE_REACH_TOLERANCE_M" \
+        lateral_error_max_m:="$LATERAL_ERROR_MAX_M" \
+        idle_home_timeout_s:="$IDLE_HOME_TIMEOUT_S" \
         > "$LOG_DIR/3_planner.log" 2>&1 &
     PIDS+=($!)
 

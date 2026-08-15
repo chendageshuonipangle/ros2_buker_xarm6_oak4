@@ -93,6 +93,12 @@ def euler_xyz_from_quaternion(quat, degrees=False):
     return roll, pitch, yaw
 
 class ArmMotionPlannerNode(Node):
+    # xArm6 "hold-up" named state from _xarm6_macro.srdf.xacro: only joint5 is
+    # turned -90 deg. This points the OAK camera straight ahead so it can look
+    # for the next object to pick, which also makes it the only safe place to
+    # park after a failure -- anywhere else may leave the camera blind.
+    HOME_JOINTS = [0.0, 0.0, 0.0, 0.0, -math.pi / 2, 0.0]
+
     def __init__(self):
         super().__init__('arm_motion_planner_node')
         self.callback_group = ReentrantCallbackGroup()
@@ -159,6 +165,19 @@ class ArmMotionPlannerNode(Node):
         # unreachable fruit used to spam ~18 warnings a second. Log the first
         # one immediately, then at most one per period until a pose passes.
         self.declare_parameter('limit_log_period_s', 5.0)
+        # How far the TCP may end up from the commanded point and still count
+        # as arrived. A C31 mid-trajectory leaves the arm parked short while
+        # the action still reports success, so the endpoint must be measured.
+        self.declare_parameter('pose_reach_tolerance_m', 0.02)
+        # How far Point A's actual Y/Z may sit from the fruit before advancing
+        # is pointless. The planner picks IK solutions that satisfy orientation
+        # but drift sideways; advancing from a 30 cm miss grabs air and jams.
+        self.declare_parameter('lateral_error_max_m', 0.05)
+        # Idle watchdog: if the arm is parked away from hold-up with nothing to
+        # do for this long, walk it home. A wrist left twisted points the
+        # eye-in-hand camera off the workspace, so detections stop, and with no
+        # target nothing would ever trigger the motion that frees it.
+        self.declare_parameter('idle_home_timeout_s', 20.0)
 
         self.planning_group = self.get_parameter('planning_group').get_parameter_value().string_value
         self.base_frame = self.get_parameter('base_frame').get_parameter_value().string_value
@@ -197,6 +216,13 @@ class ArmMotionPlannerNode(Node):
         self.target_z_max = self.get_parameter('target_z_max').get_parameter_value().double_value
         self.arm_x_max = self.get_parameter('arm_x_max').get_parameter_value().double_value
         self.limit_log_period_s = self.get_parameter('limit_log_period_s').get_parameter_value().double_value
+        self.pose_reach_tolerance_m = self.get_parameter(
+            'pose_reach_tolerance_m').get_parameter_value().double_value
+        self.lateral_error_max_m = self.get_parameter(
+            'lateral_error_max_m').get_parameter_value().double_value
+        self.idle_home_timeout_s = self.get_parameter(
+            'idle_home_timeout_s').get_parameter_value().double_value
+        self._idle_since = time.time()
         self._limit_reject_last_log = 0.0
 
         self._assert_single_instance()
@@ -246,6 +272,12 @@ class ArmMotionPlannerNode(Node):
         if self.auto_execute:
             self.auto_timer = self.create_timer(
               self.auto_execute_interval, self._auto_execute_timer_callback, callback_group=self.callback_group
+            )
+        # Runs regardless of auto_execute: manual mode can strand the arm the
+        # same way, and then the operator has no target to trigger on either.
+        if self.idle_home_timeout_s > 0:
+            self.idle_timer = self.create_timer(
+                5.0, self._idle_home_check, callback_group=self.callback_group
             )
 
         # Clients
@@ -688,6 +720,43 @@ class ArmMotionPlannerNode(Node):
         self.is_executing = True
         threading.Thread(target=self._auto_execute_grasp, args=(target.pose,), daemon=True).start()
 
+    def _idle_home_check(self):
+        """Walk the arm home if it has been parked off hold-up doing nothing.
+
+        This is the backstop for the deadlock: a twisted wrist aims the
+        eye-in-hand camera away from the workspace, so no detections arrive, so
+        no grasp is triggered, so nothing ever moves the arm back. The arm
+        reports err=0 the whole time and simply sits there.
+        """
+        if self.is_executing or self.is_cooling_down:
+            self._idle_since = time.time()
+            return
+        joints = self.get_current_joints(timeout_s=0.5)
+        if joints is None:
+            return
+        if max(abs(a - b) for a, b in zip(joints, self.HOME_JOINTS)) <= 0.05:
+            self._idle_since = time.time()
+            return
+        with self.target_lock:
+            has_target = self.current_target_pose is not None
+        if has_target:
+            # A target is in hand; the normal grasp path will move the arm.
+            self._idle_since = time.time()
+            return
+        if time.time() - self._idle_since < self.idle_home_timeout_s:
+            return
+        self._idle_since = time.time()
+        self.get_logger().warn(
+            f'空闲 {self.idle_home_timeout_s:.0f}s 且不在 hold-up 位，'
+            f'相机可能看不到工作区，自动回家。'
+        )
+        self.is_executing = True
+        try:
+            self.return_home('空闲超时')
+        finally:
+            self.is_executing = False
+            self._idle_since = time.time()
+
     def get_current_pose_msg(self):
         try:
             if self.tf_buffer.can_transform(self.base_frame, self.end_effector_link, rclpy.time.Time(), timeout=Duration(seconds=1.0)):
@@ -753,14 +822,77 @@ class ArmMotionPlannerNode(Node):
         电流尖峰，从源头避免 C31，而不是靠事后恢复补救。
         """
         with self.motion_lock:
-            if self._move_ptp_locked(target_pose, strict_orientation, gentle):
+            if self._move_ptp_locked(target_pose, strict_orientation, gentle) \
+                    and self._verify_arrived(target_pose):
                 return True
             # A fault deactivates the controller, so every later goal fails
             # with the same error. Recover once, then retry.
             if self.is_controller_active() is False and self.recover_from_fault():
                 self.get_logger().info('   恢复后重试本次 PTP...')
-                return self._move_ptp_locked(target_pose, strict_orientation, gentle)
+                return (self._move_ptp_locked(target_pose, strict_orientation, gentle)
+                        and self._verify_arrived(target_pose))
             return False
+
+    def return_home(self, reason: str) -> bool:
+        """Drive back to hold-up after an aborted grasp.
+
+        Bailing out with a bare return used to leave the arm wherever it
+        stopped. That is a trap, not a safe state: a bad wrist pose swings the
+        eye-in-hand camera off the workspace, detections stop, and with no new
+        target nothing can trigger the motion that would recover it. The arm
+        sits there looking healthy (err=0) and completely stuck.
+
+        Joint-space is deliberate here -- a Cartesian goal needs IK at a pose
+        that may itself be the problem.
+        """
+        self.get_logger().warn(f'   ↩ {reason}，回 hold-up 位')
+        if not self.wait_until_arm_ready():
+            self.recover_from_fault()
+        if self.move_joints(self.HOME_JOINTS, gentle=True):
+            self.get_logger().info('   ✓ 已回到 hold-up 位，相机重新正视前方')
+            return True
+        # One retry after an explicit recovery: this is the last line of
+        # defence before the arm is genuinely stranded.
+        self.get_logger().warn('   回家失败，恢复后重试...')
+        self.recover_from_fault()
+        if self.move_joints(self.HOME_JOINTS, gentle=True):
+            self.get_logger().info('   ✓ 已回到 hold-up 位')
+            return True
+        self.get_logger().error(
+            '   ✗ 无法回家。臂停在当前位姿，相机可能看不到工作区。'
+            '请手动用 MoveIt 拖回 hold-up，或执行 '
+            './start_peach_grasp.sh recover 后重试'
+        )
+        return False
+
+    def _verify_arrived(self, target_pose: Pose) -> bool:
+        """Confirm the TCP actually reached the commanded point.
+
+        MoveIt reporting status 4 only means the action finished, not that the
+        arm is where it was told to go. When C31 aborts a trajectory partway
+        the controller stops short and the goal can still come back complete.
+        Trusting that is what let the arm sit 30 cm off in Y and then drive
+        Stage 2 forward from the wrong place.
+        """
+        actual = self.get_current_pose_msg()
+        if actual is None:
+            # No TF is a separate failure; do not also call it a miss.
+            self.get_logger().warn('   无法读取当前位姿，跳过到位校验。')
+            return True
+        error = math.dist(
+            (actual.position.x, actual.position.y, actual.position.z),
+            (target_pose.position.x, target_pose.position.y, target_pose.position.z),
+        )
+        if error <= self.pose_reach_tolerance_m:
+            return True
+        self.get_logger().error(
+            f'   ✗ 未到位：偏差 {error * 1000:.0f}mm > '
+            f'{self.pose_reach_tolerance_m * 1000:.0f}mm '
+            f'(指令 [{target_pose.position.x:.3f}, {target_pose.position.y:.3f}, '
+            f'{target_pose.position.z:.3f}] 实际 [{actual.position.x:.3f}, '
+            f'{actual.position.y:.3f}, {actual.position.z:.3f}])'
+        )
+        return False
 
     def _move_ptp_locked(self, target_pose: Pose, strict_orientation=True, gentle=False) -> bool:
         if not self.move_group_client.wait_for_server(2.0): return False
@@ -920,13 +1052,17 @@ class ArmMotionPlannerNode(Node):
             self.gripper_control(self.gripper_open_pos)
             if not self.move_ptp(pose_a, strict_orientation=True):
                 self.get_logger().error('无法到达 Point A!')
+                # The arm may have stopped partway with the wrist twisted.
+                self.return_home('到 Point A 失败')
                 return
             
             self.get_logger().info('👀 停顿 2s...')
             time.sleep(2.0)
             
             current_pose_a = self.log_current_pose("At Point A", target_rpy=TARGET_RPY) 
-            if current_pose_a is None: return
+            if current_pose_a is None:
+                self.return_home('读取 Point A 实际位姿失败')
+                return
 
             # === 关键修改：Stage 2 必须动！ ===
             # 使用 A 点的 *实际姿态* 作为 B 点姿态，放弃矫正
@@ -934,14 +1070,34 @@ class ArmMotionPlannerNode(Node):
             pose_b = copy.deepcopy(current_pose_a)
             pose_b.position.x += ADVANCE_GAP
 
+            # The planner often satisfies the orientation constraint with a
+            # solution well away from the commanded Y/Z. Advancing from there
+            # aims the gripper somewhere the target is not, and pushing into
+            # that is what trips C31. _verify_arrived already bounds this, but
+            # state it explicitly against the fruit rather than against the
+            # commanded point, because that is the error that actually matters.
+            lateral_error = math.dist(
+                (current_pose_a.position.y, current_pose_a.position.z),
+                (target_pose.position.y, target_pose.position.z),
+            )
+            if lateral_error > self.lateral_error_max_m:
+                self.get_logger().error(
+                    f'Point A 横向偏离目标 {lateral_error * 1000:.0f}mm > '
+                    f'{self.lateral_error_max_m * 1000:.0f}mm，前进只会抓空。'
+                )
+                self.return_home('Point A 横向偏离过大')
+                return
+
             # A 点的实际位姿会偏离规划值 (规划器为满足姿态约束而挑了别的解)，
             # 所以之前基于规划 A 算的 B 预检不足以代表真实 B，这里按实际
             # 落点再验一次，确认前进那一下不会撞进奇异区。
             if not self.is_pose_within_target_limits(pose_b, label='Point B (actual)', x_max=self.arm_x_max):
                 self.get_logger().error('实际 Point B 超出限位，中止前进。')
+                self.return_home('实际 Point B 超出限位')
                 return
             if not self.is_pose_reachable(pose_b, label='Point B (actual)'):
                 self.get_logger().error('实际 Point B 不可达，中止前进。')
+                self.return_home('实际 Point B 不可达')
                 return
 
             self.get_logger().info(f'[STAGE 2] PTP 前进 (X={pose_b.position.x:.3f}) - 使用实际姿态')
@@ -949,12 +1105,14 @@ class ArmMotionPlannerNode(Node):
             # 这里 strict_orientation=True 是为了保持"当前歪姿态"不变，而不是修正回"理想姿态"
             if not self.move_ptp(pose_b, strict_orientation=True):
                 self.get_logger().error('前进失败!')
+                self.return_home('前进失败')
                 return
 
             # === 位移校验 ===
             final_pose_b = self.log_current_pose("At Point B", target_rpy=TARGET_RPY)
             if final_pose_b and (final_pose_b.position.x - current_pose_a.position.x < 0.01):
                 self.get_logger().error("❌ 严重错误：机械臂没有前进！中止抓取！")
+                self.return_home('前进位移不足')
                 return
 
             self.get_logger().info(
@@ -995,13 +1153,7 @@ class ArmMotionPlannerNode(Node):
 
             # STAGE 4: 回家
             self.get_logger().info('[STAGE 4] 关节运动回家 - 负载慢速...')
-            # xArm6 "hold-up" named state from _xarm6_macro.srdf.xacro: only
-            # joint5 is turned -90 deg. This points the OAK camera straight
-            # ahead so it can look for the next object to pick.
-            home_degrees = [0, 0, 0, 0, -90, 0]
-            home = [np.radians(d) for d in home_degrees]
-            
-            if not self.move_joints(home, gentle=True):
+            if not self.move_joints(self.HOME_JOINTS, gentle=True):
                 self.get_logger().warn('关节回家未成功。')
 
             self.get_logger().info('>>> 抓取完成')

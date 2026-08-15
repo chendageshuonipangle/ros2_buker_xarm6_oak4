@@ -1,14 +1,30 @@
+# ROS 2 编译产物
 build/
 install/
 log/
+
+# 编辑器与缓存
 .vscode/
 .cache/
+.pytest_cache/
+__pycache__/
+*.pyc
 
 # 大体积模型：超过 GitHub 50MB 建议上限，且当前管线未使用。
 # 抓取用的是 best_ckpt.rvc2.tar.xz (8.2MB)，保留在仓库内。
 src/oak_yolo_py/oak_yolo_py/yolo_world_v2_l_obj_640_480_int8.rvc4.tar.xz
 src/oak_yolo_py/oak_yolo_py/yolov8l-pose.rvc4.tar.xz
 
-# 采集会话与标定原始数据（体积大且属于本机现场数据）
+# 现场采集数据与标定原始样本（体积大，属于本机数据）
 oak_handeye/
+nav_data/
 *.npz
+
+# 备份与临时文件
+*.bak
+backup_*/
+*.zip
+
+# 一次性对比图与草稿脚本
+1.0*.png
+test.py

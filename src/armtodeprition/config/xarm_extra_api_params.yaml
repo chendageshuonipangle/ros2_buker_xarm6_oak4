@@ -1,0 +1,22 @@
+# Extra xArm API service switches for the vision grasp pipeline.
+#
+# xarm_api creates a service only when services.<name> is true. The upstream
+# xarm_params.yaml ships most of them as false, so calling them just reports
+# "服务不可用" even though the name is correct. That is why set_tcp_load never
+# worked: the service was never created, so the controller kept feed-forwarding
+# zero payload and tripped C31 [Collision Caused Abnormal Joint Current].
+#
+# Passed to the MoveIt realmove launch as extra_robot_api_params_path, which
+# merges on top of xarm_params.yaml. Only the keys below are overridden.
+ufactory_driver:
+  ros__parameters:
+    services:
+      # Declare how much the gripper carries, so the controller compensates
+      # joint torque instead of reading the extra current as a collision.
+      set_tcp_load: true
+      # Relax collision detection while the gripper is deliberately fighting
+      # the stem, then restore it afterwards.
+      set_collision_sensitivity: true
+      # Read the live controller error/warn code to tell a real fault from a
+      # planning failure.
+      get_err_warn_code: true

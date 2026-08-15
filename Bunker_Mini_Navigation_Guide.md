@@ -1041,6 +1041,12 @@ AUTO_EXECUTE=true ./start_peach_grasp.sh
 | `TWIST_CYCLES` | `2` | 拧转轮数 |
 | `GRIP_SETTLE_S` | `1.0` | 闭合夹爪后等待夹持稳定的时间 (s) |
 | `PAYLOAD_KG` | `0.3` | 果子重量 (kg)，用于力矩补偿，防误报 C31 |
+| `TWIST_COLLISION_SENSITIVITY` | `0` | 拧转期间的碰撞灵敏度 0~5，0 为关闭，拧完自动还原 |
+| `NORMAL_COLLISION_SENSITIVITY` | `3` | 平时的碰撞灵敏度 0~5，越大越敏感 |
+| `LOADED_VELOCITY_SCALE` | `0.15` | 带果子退回/回家的速度比例 |
+| `LOADED_ACCELERATION_SCALE` | `0.08` | 带果子退回/回家的加速度比例 |
+| `TARGET_X_MAX` | `0.95` | 果子 X 上限 (m)，臂只走到 `目标X - 0.27`，所以比臂自身可达更远 |
+| `ARM_X_MAX` | `0.80` | TCP 自身 X 上限 (m)，约束 Point A/B，这条才守可达性 |
 | `ROBOT_IP` | `192.168.1.242` | 机械臂 IP |
 
 ```bash
@@ -1086,6 +1092,25 @@ SHOW=false ./start_peach_grasp.sh
 动臂之前先算出 Point A 与 Point B，两点都要过限位检查，再各调一次
 `/compute_ik` 确认可达。任一项不过就放弃本次抓取，臂不动。
 
+这里有**两套**不同的限位盒，别混起来看：
+
+| 限位 | 约束对象 | 默认 X 上限 | 作用 |
+|---|---|---|---|
+| `target_x_max` | 果子位置 | 0.95 | 只筛掉离谱的检测点，臂不会走到这里 |
+| `arm_x_max` | TCP 实际位置 | 0.80 | 约束 Point A/B，守机械臂可达性 |
+
+之所以要分开：Point A 在 `目标X - 0.27`（夹爪 0.17 + 留隙 0.10），
+Point B 再前进 0.08。果子在 X=0.95 时，A=0.68、B=0.76，都还在舒适区。
+早先两者共用 `target_x_max=0.80`，等于拿 TCP 的可达范围去约束果子位置，
+X=0.83 的果子被判超限刷屏拒绝，而臂本来根本不用伸那么远。
+
+Y/Z 没有跟着放宽，反而要守住：历史上出现过 `y=-0.295` 的边缘解过了预检
+后卡死，横向余量是靠 IK 预检和 Y 限位共同兜的。
+
+超限告警按检测帧率触发（约 18 次/秒），会把终端刷满。现在同一段拒绝只在
+首次立即打印，之后每 `limit_log_period_s`（默认 5s）最多一条，
+有位姿通过后计时器复位。
+
 到达 A 点后还会用**实际**位姿重算 B 点并再验一次。因为规划器为满足姿态约束
 常会挑到与规划值偏离较大的解（实测规划 A 为 `y=0`、实际到 `y=-0.295`），
 基于规划 A 预检的 B 不能代表真实 B。这道复检才是真正挡住
@@ -1098,9 +1123,9 @@ SHOW=false ./start_peach_grasp.sh
 | 预检 | 校验 A/B 限位与可达性 |
 | STAGE 1 | PTP 到 Point A（目标后方 27 cm），张开夹爪 |
 | STAGE 2 | 前进 8 cm 到 Point B，继承 A 点实际姿态，闭合夹爪至 42° |
-| STAGE 2.5 | 夹持稳定 1 s → 申报负载 → 拧转摘果：只转 joint6，±45° × 2 轮 |
-| STAGE 3 | PTP 退回 Point A |
-| STAGE 4 | 关节运动回 hold-up 位（相机正视前方，便于找下一个目标），松开夹爪 |
+| STAGE 2.5 | 夹持稳定 1 s → 申报负载 → 放宽碰撞检测 → 拧转摘果：只转 joint6，±45° × 2 轮 → 还原碰撞检测 |
+| STAGE 3 | 等机械臂真正就绪 → PTP 退回 Point A（负载慢速） |
+| STAGE 4 | 关节运动回 hold-up 位（负载慢速，相机正视前方），松开夹爪，清零负载 |
 
 夹爪行程对照（`drive_joint`，MoveIt 界面显示角度、话题里是弧度）：
 
@@ -1148,10 +1173,10 @@ STAGE 2 刻意继承 A 点实际姿态而不强行修正到理想姿态：实测
 台面未纳入碰撞模型（`add_workspace_obstacles` 只加了后方安全墙
 `rear_safety_wall`），依赖预检和限位保护，不依赖碰撞检测。
 
-**目标限位仍然偏宽。** `target_x_max` 默认 0.80，比实际工作台需要的范围大。
-限位太松时，视觉偶发的边缘坏点能通过预检走到臂上，历史上出现过走到
-`y=-0.295` 后 `CONTROL_FAILED` 卡死。收紧需要现场量出果子的实际摆放范围，
-用 `target_x_max` 等参数改，暂未固化。
+**限位范围未按现场实测标定。** 果子限位 `target_x_max=0.95` 与 TCP 限位
+`arm_x_max=0.80` 是按夹爪几何和 xArm6 舒适区推的，不是量出来的。真正兜住
+坏点的是 A/B 双重限位加两次 `/compute_ik`，限位盒本身只是粗筛。想收紧就现场
+量出果子的实际摆放范围，用 `TARGET_X_MAX` / `ARM_X_MAX` 改。
 
 **USB2 限制检测帧率。** 设备端时间戳显示 NN 实际以 30 fps 推理，
 但主机只收到约 18 fps，差额掉在 USB2 回传上。插到 USB3 口即可跑满。
@@ -1174,15 +1199,98 @@ xArm 按"当前负载"前馈关节力矩。夹着果子但控制器仍以为负�
 此后每一条轨迹都被拒（`Controller is not running`），于是 STAGE 3 退回、
 STAGE 4 回零位连续失败 —— 不是没力气，是控制器已经下线。
 
-两项处理：
+#### 为什么"负载申报"一开始根本没生效
 
-- **申报负载**：夹紧后调 `/xarm/set_tcp_load` 告知重量（`PAYLOAD_KG`，默认
-  0.3 kg），力矩补偿正确后就不会误判。果子松开后才清零，避免最后一段运动用
-  错误的补偿值
-- **自动恢复**：`move_ptp` / `move_joints` 失败后会检查控制器状态，若已停用则
-  依次 `clean_error` → `motion_enable` → `set_mode(1)` → `set_state(0)` →
-  `switch_controller` 重新激活，然后重试一次。抓取收尾也会兜底检查一遍，
-  不会把机械臂留在"死"状态
+实测日志里负载申报每次都打印 `set_tcp_load: 服务不可用`，但服务名是对的。真正的
+原因在 `xarm_api` 的设计：**服务是按参数开关逐个创建的**。
+`xarm_api/src/xarm_driver_service.cpp` 里的 `_create_service()` 会先读
+`services.<服务名>` 参数，只有为 `true` 才注册：
+
+```cpp
+node_->get_parameter_or("services." + service_name, enable, false);
+if (service_debug_ || enable) { ... create_service ... }
+return NULL;   // 否则压根不创建
+```
+
+而上游 `xarm_api/config/xarm_params.yaml` 里 `set_tcp_load: false`。
+所以那个服务从来就不存在，调用自然"不可用"。
+`clean_error` / `set_mode` / `set_state` / `motion_enable` 默认是 `true`，
+这解释了为什么自动恢复能工作、只有负载申报不行。
+
+修法是给 MoveIt 启动传 `extra_robot_api_params_path`，它会 merge 到
+`xarm_params.yaml` 之上，只覆盖列出的键：
+
+```yaml
+# src/armtodeprition/config/xarm_extra_api_params.yaml
+ufactory_driver:
+  ros__parameters:
+    services:
+      set_tcp_load: true
+      set_collision_sensitivity: true
+      get_err_warn_code: true
+```
+
+`start_peach_grasp.sh` 已自动带上这个文件，无需手工传参。自检会检查它是否装好，
+`status` 模式会检查这两个服务是否真的在线：
+
+```bash
+./start_peach_grasp.sh status
+```
+
+若显示 `/xarm/set_tcp_load 不在线`，说明 MoveIt 是用旧命令起的，
+`./start_peach_grasp.sh stop --with-moveit` 后重启即可。
+
+#### 为什么拧转本身也会跳 C31
+
+拧断果柄这个动作，从控制器的角度看**和撞到东西完全一样**：夹爪咬着还连在枝上的
+果子转 joint6，关节电流必然超出无负载模型的预期。所以即使负载申报正确，
+拧转阶段仍会跳 C31。
+
+对策是拧转期间临时放宽碰撞检测，拧完立即还原：
+
+- 进入 STAGE 2.5 前调 `/xarm/set_collision_sensitivity` 设为
+  `TWIST_COLLISION_SENSITIVITY`（默认 0 = 关闭）
+- 拧转结束、以及**任何失败路径**上都会还原为
+  `NORMAL_COLLISION_SENSITIVITY`（默认 3）。这一步放在 `finally` 里，
+  抓取主流程的 `finally` 还会再兜一次
+- 之所以敢临时关掉：此时机械臂停在已通过预检的位姿上，只动一个腕部关节，
+  不存在撞向未知障碍的路径
+
+**注意**：碰撞检测被关闭的这几秒里，真撞上东西不会自动停。所以拧转幅度和轮数
+不要设得太夸张，人也不要在这期间伸手进工作区。
+
+#### 负载在手时降速
+
+带着果子按空载的加速度回程，同样会把关节电流顶上去。STAGE 3 / STAGE 4 现在用
+`gentle` 模式规划，速度与加速度比例从 0.3/0.2 降到
+`LOADED_VELOCITY_SCALE` / `LOADED_ACCELERATION_SCALE`（默认 0.15/0.08）。
+
+#### 恢复后先确认真的能动了
+
+以前一次 C31 会连锁出好几个 `CONTROL_FAILED`：`switch_controller` 报成功只代表
+ros2_control 重新接受了控制器，机械臂本身可能还在 error 状态或没回到 SERVO 模式，
+这个窗口里发下一条轨迹必然被拒。
+
+现在订阅 `/xarm/robot_states`（ros2_control 模式下驱动依然发布），恢复后要等到
+`err == 0 且 state <= 2 且 mode == 1` 才算就绪；STAGE 3 开始前也会先确认一次。
+收不到该话题时按"就绪"处理，退回原有行为，不会把流程卡死。
+
+#### 三层处理汇总
+
+| 层次 | 作用 | 参数 |
+|---|---|---|
+| 申报负载 | 力矩补偿正确，不误判电流 | `PAYLOAD_KG`（默认 0.3） |
+| 拧转期放宽碰撞检测 | 拧果柄不再被当成撞机 | `TWIST_COLLISION_SENSITIVITY`（默认 0） |
+| 负载慢速回程 | 削掉电流尖峰 | `LOADED_VELOCITY_SCALE`（默认 0.15） |
+| 自动恢复（兜底） | 万一还是跳闸，自己爬回来 | `auto_recover`（默认 true） |
+
+前三层是从源头避免跳闸，第四层是兜底。**自动恢复能救回来，但每次都靠恢复说明
+前三层没配好** —— 正常一次抓取应该全程无 C31。
+
+自动恢复流程：`move_ptp` / `move_joints` 失败后检查控制器状态，若已停用则依次
+`clean_error` → `motion_enable` → `set_mode(1)` → `set_state(0)` →
+`switch_controller`，等机械臂真正就绪后重试一次。抓取收尾兜底再查一遍，
+不会把机械臂留在"死"状态。
 
 手动恢复入口：
 
@@ -1193,6 +1301,19 @@ cd ~/ros2_ws
 
 果子明显更重时把 `PAYLOAD_KG` 调大，例如 `PAYLOAD_KG=0.5 ./start_peach_grasp.sh`。
 估重偏小仍可能触发 C31，偏大则会让碰撞检测变钝，按实际重量填。
+
+仍然频繁跳 C31 时的排查顺序：
+
+```bash
+# 1. 服务到底在不在
+./start_peach_grasp.sh status
+
+# 2. 降速再试
+LOADED_VELOCITY_SCALE=0.1 LOADED_ACCELERATION_SCALE=0.05 ./start_peach_grasp.sh
+
+# 3. 先排除拧转的影响
+TWIST_ENABLE=false ./start_peach_grasp.sh
+```
 
 ### 14.10 不要留下两个规划节点
 
@@ -1227,8 +1348,13 @@ cd ~/ros2_ws
 | `没有可用目标点` | 检测未稳定，或点被限位拒绝，看规划节点日志的限位告警 |
 | `Point B 不可达` | 目标在工作空间边缘，把目标往底座方向挪近 |
 | `CONTROL_FAILED` | 先查是否有两个规划节点在抢（见 14.10）；确认唯一后再清错误重新使能 |
-| `C31` / `Controller is not running` | 负载未申报导致故障跳闸，控制器已停用。跑 `./start_peach_grasp.sh recover`，并按实际果重调 `PAYLOAD_KG` |
+| `C31` / `Controller is not running` | 故障跳闸使控制器停用。先 `./start_peach_grasp.sh status` 确认 `/xarm/set_tcp_load` 在线（不在线说明 MoveIt 没带服务开关，见 14.9），再按实际果重调 `PAYLOAD_KG`。急救用 `./start_peach_grasp.sh recover` |
+| `set_tcp_load: 服务不可用` | 服务名没错，是 `xarm_api` 默认没创建它。用脚本启动会自动带上 `extra_robot_api_params_path`；手工起 MoveIt 时必须自己传（见 14.9） |
+| 每次抓取都要靠自动恢复 | 说明前三层防护没生效：查服务是否在线、降 `LOADED_VELOCITY_SCALE`、或先 `TWIST_ENABLE=false` 排除拧转影响 |
 | 拧转时果子打滑 | 加大 `GRIP_SETTLE_S`，或把 `GRIPPER_CLOSE_DEG` 上调 1–2° |
+| `Target 超出限位` 刷屏 | 果子超出 `TARGET_X_MAX`，且拒绝日志按检测帧率重复。现在同一段拒绝 5s 只打一条；确认果子确实在臂能覆盖的范围内再考虑调 `TARGET_X_MAX` |
+| 果子明显够得着却报 `Target 超出限位` | `TARGET_X_MAX` 卡的是果子位置，臂只走到 `目标X - 0.27`。放宽 `TARGET_X_MAX` 而不是 `ARM_X_MAX` |
+| `Point A / Point B 超出限位` | 这是 TCP 真要去的点，被 `ARM_X_MAX` 拦下，属于正常保护。把果子往底座方向挪近 |
 
 机械臂报错后恢复：
 
@@ -1278,6 +1404,13 @@ ros2 service call /xarm/set_state xarm_msgs/srv/SetInt16 "{data: 0}"
 | 夹爪按满闭合夹 | 硬编码 `0.85` rad = 48.7° | 改 `GRIPPER_CLOSE_DEG` 参数，默认 42° |
 | 拿旧目标点动臂 | 无时效检查 | 自动与手动统一 2 s 时效窗口 |
 | Ctrl-C 报 `rcl_shutdown already called` | 重复调用 `rclpy.shutdown()` | 四个节点统一 `if rclpy.ok()` |
+| 抓到果子后回程失败，像"没力气" | C31 跳闸使 `xarm6_traj_controller` 被停用，后续每条轨迹都被拒 | 申报负载 + 自动恢复 + 恢复后重试 |
+| `set_tcp_load: 服务不可用`（服务名是对的） | `xarm_api` 按 `services.<名>` 参数逐个创建服务，上游默认 `set_tcp_load: false`，服务压根没建 | 新增 `xarm_extra_api_params.yaml`，脚本经 `extra_robot_api_params_path` 打开该服务 |
+| 拧转阶段必跳 C31 | 拧断果柄就是在跟外力顶牛，关节电流超出无负载模型，控制器判为碰撞 | 拧转期间临时放宽碰撞灵敏度，任何失败路径都还原 |
+| 一次 C31 连锁出多次 `CONTROL_FAILED` | `switch_controller` 成功只代表 ros2_control 接受了控制器，机械臂可能仍在 error 或非 SERVO 模式 | 订阅 `/xarm/robot_states`，等 `err==0 且 state<=2 且 mode==1` 才继续 |
+| 带果子回程电流尖峰 | 负载在手仍按空载加减速 | STAGE 3/4 改 `gentle` 规划，速度/加速度降到 0.15/0.08 |
+| 够得着的果子被判超限并刷屏 | 果子位置和 TCP 位置共用一个限位盒，等于拿臂的可达范围去约束果子；臂实际只走到 `目标X - 0.27` | 拆成两套：果子 `target_x_max=0.95`、TCP `arm_x_max=0.80`（约束 A/B）；Y/Z 不放宽 |
+| 超限告警按 18 fps 刷满终端 | 每帧被拒都打一条 | 首次立即打印，之后每 `limit_log_period_s`（默认 5s）最多一条，通过后复位 |
 
 标定侧结论：残差 6.4 mm 是 xArm6 正运动学的绝对精度，不是标定 bug，不再压。
 证据是同一 TCP 位姿重复采样时视觉噪声比残差小约 20 倍，且四种求解算法

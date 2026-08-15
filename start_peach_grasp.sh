@@ -32,12 +32,25 @@ TWIST_CYCLES="${TWIST_CYCLES:-2}"
 # 夹住后等夹持稳定再拧；负载告知控制器，避免搬运途中误报 C31。
 GRIP_SETTLE_S="${GRIP_SETTLE_S:-1.0}"
 PAYLOAD_KG="${PAYLOAD_KG:-0.3}"
+# 拧转期间放宽碰撞检测(0=关)，拧完还原。拧断果柄本身就是在跟外力顶牛，
+# 控制器会把这股关节电流判成碰撞 (C31) 并停用轨迹控制器。
+TWIST_COLLISION_SENSITIVITY="${TWIST_COLLISION_SENSITIVITY:-0}"
+NORMAL_COLLISION_SENSITIVITY="${NORMAL_COLLISION_SENSITIVITY:-3}"
+# 带着果子退回/回家时的速度与加速度比例，降下来避免电流尖峰。
+LOADED_VELOCITY_SCALE="${LOADED_VELOCITY_SCALE:-0.15}"
+LOADED_ACCELERATION_SCALE="${LOADED_ACCELERATION_SCALE:-0.08}"
+# 果子可信范围 X 上限；臂停在 target.x-0.27 处，所以这里比臂自身可达更远。
+TARGET_X_MAX="${TARGET_X_MAX:-0.95}"
+# TCP 自身 X 上限，约束 Point A/B，这条才是真正守可达性的。
+ARM_X_MAX="${ARM_X_MAX:-0.80}"
 # ==================================================
 
 export ROS_DOMAIN_ID=40
 WS="$HOME/ros2_ws"
 LOG_DIR="$WS/log/peach_grasp_$(date +%Y%m%d_%H%M%S)"
 PIDS=()
+# 装到 install 下的 xArm 服务开关文件；源码在 src/armtodeprition/config/。
+XARM_EXTRA_API_PARAMS="${XARM_EXTRA_API_PARAMS:-$WS/install/armtodeprition/share/armtodeprition/config/xarm_extra_api_params.yaml}"
 
 usage() {
     cat <<'EOF'
@@ -67,6 +80,14 @@ usage() {
   TWIST_ENABLE=false  关闭拧转
   GRIP_SETTLE_S=1.5   夹住后等待多久再拧转（默认 1.0s）
   PAYLOAD_KG=0.5      果子重量 kg（默认 0.3，用于力矩补偿）
+  NORMAL_COLLISION_SENSITIVITY=4
+                      平时的碰撞灵敏度 0~5（默认 3，越大越敏感）
+  TWIST_COLLISION_SENSITIVITY=1
+                      拧转期间的灵敏度（默认 0=关闭，拧完自动还原）
+  LOADED_VELOCITY_SCALE=0.2
+                      带果子回程速度比例（默认 0.15）
+  TARGET_X_MAX=1.0    果子 X 上限 m（默认 0.95，臂停在 target.x-0.27）
+  ARM_X_MAX=0.85      TCP 自身 X 上限 m（默认 0.80，约束 Point A/B）
 
 示例:
   ./start_peach_grasp.sh                    # 全部启动，手动触发抓取
@@ -194,6 +215,16 @@ PY
         fail=1
     fi
 
+    # xArm 服务开关文件：缺了它 set_tcp_load / set_collision_sensitivity
+    # 压根不会被创建，负载申报永远"服务不可用"，搬运途中必跳 C31。
+    if [ -f "$XARM_EXTRA_API_PARAMS" ]; then
+        ok "xArm 服务开关配置已安装"
+    else
+        bad "找不到 $XARM_EXTRA_API_PARAMS"
+        warn "请先 colcon build --packages-select armtodeprition"
+        fail=1
+    fi
+
     # 残留进程检查：两个规划节点同时发轨迹会让 MoveIt 全程 CONTROL_FAILED
     local stale
     stale=$(pgrep -f "motion_planner_node" | tr '\n' ' ')
@@ -238,11 +269,24 @@ PY
 
 start_moveit() {
     log "[1/4] 启动 xArm6 MoveIt2 真机控制 (robot_ip=$ROBOT_IP)"
+    # extra_robot_api_params_path 打开 xarm_api 默认关闭的服务
+    # (set_tcp_load / set_collision_sensitivity)。不传这个文件，负载申报
+    # 会一直报"服务不可用"，控制器按零负载前馈力矩，搬运途中必跳 C31。
+    # ros2 launch 拒绝空值 (malformed launch argument)，所以文件不存在时
+    # 必须整个参数都不传，而不是传空字符串。
+    local extra_args=()
+    if [ -f "$XARM_EXTRA_API_PARAMS" ]; then
+        extra_args+=("extra_robot_api_params_path:=$XARM_EXTRA_API_PARAMS")
+        echo "      xArm 服务开关: $XARM_EXTRA_API_PARAMS"
+    else
+        warn "找不到 $XARM_EXTRA_API_PARAMS，负载申报与碰撞灵敏度将不可用"
+    fi
     ros2 launch xarm_moveit_config xarm6_moveit_realmove.launch.py \
         robot_ip:="$ROBOT_IP" \
         add_gripper:=true \
         add_arc_gripper:=true \
         add_oak_d_sr:=true \
+        "${extra_args[@]}" \
         > "$LOG_DIR/1_moveit.log" 2>&1 &
     PIDS+=($!)
 
@@ -296,6 +340,7 @@ start_planner() {
     else
         ok "自动抓取关闭，需手动调用 /execute_grasp 触发"
     fi
+    echo "      限位: 果子 X≤${TARGET_X_MAX}m / TCP X≤${ARM_X_MAX}m"
     if [ "$TWIST_ENABLE" = "true" ]; then
         echo "      拧转摘果: joint6 ±${TWIST_DEG}° × ${TWIST_CYCLES} 轮 (夹持稳定 ${GRIP_SETTLE_S}s 后开始)"
     else
@@ -309,6 +354,12 @@ start_planner() {
         twist_cycles:="$TWIST_CYCLES" \
         grip_settle_s:="$GRIP_SETTLE_S" \
         payload_kg:="$PAYLOAD_KG" \
+        twist_collision_sensitivity:="$TWIST_COLLISION_SENSITIVITY" \
+        normal_collision_sensitivity:="$NORMAL_COLLISION_SENSITIVITY" \
+        loaded_velocity_scale:="$LOADED_VELOCITY_SCALE" \
+        loaded_acceleration_scale:="$LOADED_ACCELERATION_SCALE" \
+        target_x_max:="$TARGET_X_MAX" \
+        arm_x_max:="$ARM_X_MAX" \
         > "$LOG_DIR/3_planner.log" 2>&1 &
     PIDS+=($!)
 
@@ -434,6 +485,21 @@ show_status() {
         ok "/execute_grasp 服务在线"
     else
         bad "/execute_grasp 服务不在线"
+    fi
+
+    # 这两个是 C31 的关键：负载不申报、灵敏度不能放宽，就只能靠事后恢复。
+    local svc
+    svc=$(ros2 service list 2>/dev/null)
+    if echo "$svc" | grep -q "/xarm/set_tcp_load"; then
+        ok "/xarm/set_tcp_load 在线（负载可申报）"
+    else
+        bad "/xarm/set_tcp_load 不在线：MoveIt 启动时没带 extra_robot_api_params_path"
+        warn "重启：./start_peach_grasp.sh stop --with-moveit && ./start_peach_grasp.sh"
+    fi
+    if echo "$svc" | grep -q "/xarm/set_collision_sensitivity"; then
+        ok "/xarm/set_collision_sensitivity 在线（拧转可放宽碰撞检测）"
+    else
+        bad "/xarm/set_collision_sensitivity 不在线，拧转仍会跳 C31"
     fi
 
     echo ""

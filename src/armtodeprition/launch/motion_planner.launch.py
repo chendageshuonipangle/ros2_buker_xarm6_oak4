@@ -78,6 +78,26 @@ def generate_launch_description():
             description='控制器故障后自动清错误并重新激活'
         ),
         DeclareLaunchArgument(
+            'twist_collision_sensitivity',
+            default_value='0',
+            description='拧转期间的碰撞灵敏度 0~5，0 为关闭，拧完立即还原'
+        ),
+        DeclareLaunchArgument(
+            'normal_collision_sensitivity',
+            default_value='3',
+            description='拧转结束后还原的碰撞灵敏度 0~5'
+        ),
+        DeclareLaunchArgument(
+            'loaded_velocity_scale',
+            default_value='0.15',
+            description='带果子退回/回家的速度比例，越低关节电流越平稳'
+        ),
+        DeclareLaunchArgument(
+            'loaded_acceleration_scale',
+            default_value='0.08',
+            description='带果子退回/回家的加速度比例'
+        ),
+        DeclareLaunchArgument(
             'approach_height',
             default_value='0.05',
             description='接近高度 (m)'
@@ -89,8 +109,18 @@ def generate_launch_description():
         ),
         DeclareLaunchArgument(
             'target_x_max',
+            default_value='0.95',
+            description='果子 X 最大限位 (m)；臂停在 target.x-0.27，不会真伸到这里'
+        ),
+        DeclareLaunchArgument(
+            'arm_x_max',
             default_value='0.80',
-            description='目标点 X 最大限位 (m)'
+            description='TCP 自身 X 最大限位 (m)，约束 Point A/B'
+        ),
+        DeclareLaunchArgument(
+            'limit_log_period_s',
+            default_value='5.0',
+            description='超限告警最小间隔 (s)，防止按检测帧率刷屏'
         ),
         DeclareLaunchArgument(
             'target_y_min',
@@ -131,11 +161,17 @@ def generate_launch_description():
                 'grip_settle_s': LaunchConfiguration('grip_settle_s'),
                 'payload_kg': LaunchConfiguration('payload_kg'),
                 'auto_recover': LaunchConfiguration('auto_recover'),
+                'twist_collision_sensitivity': LaunchConfiguration('twist_collision_sensitivity'),
+                'normal_collision_sensitivity': LaunchConfiguration('normal_collision_sensitivity'),
+                'loaded_velocity_scale': LaunchConfiguration('loaded_velocity_scale'),
+                'loaded_acceleration_scale': LaunchConfiguration('loaded_acceleration_scale'),
                 'gripper_open_deg': LaunchConfiguration('gripper_open_deg'),
                 'auto_execute_interval': LaunchConfiguration('auto_execute_interval'),
                 'approach_height': LaunchConfiguration('approach_height'),
                 'target_x_min': LaunchConfiguration('target_x_min'),
                 'target_x_max': LaunchConfiguration('target_x_max'),
+                'arm_x_max': LaunchConfiguration('arm_x_max'),
+                'limit_log_period_s': LaunchConfiguration('limit_log_period_s'),
                 'target_y_min': LaunchConfiguration('target_y_min'),
                 'target_y_max': LaunchConfiguration('target_y_max'),
                 'target_z_min': LaunchConfiguration('target_z_min'),

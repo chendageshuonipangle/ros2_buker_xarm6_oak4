@@ -47,6 +47,7 @@ from moveit_msgs.msg import (
 )
 from control_msgs.action import GripperCommand
 from controller_manager_msgs.srv import ListControllers, SwitchController
+from xarm_msgs.msg import RobotMsg
 from xarm_msgs.srv import Call, SetInt16, SetInt16ById, SetTcpLoad
 
 
@@ -127,13 +128,37 @@ class ArmMotionPlannerNode(Node):
         self.declare_parameter('payload_cog_mm', [0.0, 0.0, 48.0])
         # Auto-recover from a controller fault instead of leaving the arm dead.
         self.declare_parameter('auto_recover', True)
+        # Collision sensitivity (0..5) held while the gripper is deliberately
+        # fighting the stem. Twisting a stem off is, from the controller's point
+        # of view, indistinguishable from bumping into something: it sees joint
+        # current it cannot explain and trips C31. 0 disables the check, which
+        # is only safe because the arm is at a pre-validated pose and moving a
+        # single wrist joint. Normal sensitivity is restored right after.
+        self.declare_parameter('twist_collision_sensitivity', 0)
+        self.declare_parameter('normal_collision_sensitivity', 3)
+        # Speed scaling for the loaded retreat. Carrying fruit at the same
+        # acceleration as the empty approach is what spikes joint current.
+        self.declare_parameter('loaded_velocity_scale', 0.15)
+        self.declare_parameter('loaded_acceleration_scale', 0.08)
         self.declare_parameter('auto_execute_interval', 3.0)
+        # Two different boxes, because they answer two different questions.
+        # target_*: where a detected fruit is plausible. The arm never drives
+        # here -- it stops one gripper length short -- so this box only has to
+        # reject garbage detections, not respect the arm's reach.
         self.declare_parameter('target_x_min', 0.10)
-        self.declare_parameter('target_x_max', 0.80)
+        self.declare_parameter('target_x_max', 0.95)
         self.declare_parameter('target_y_min', -0.50)
         self.declare_parameter('target_y_max', 0.50)
         self.declare_parameter('target_z_min', 0.00)
         self.declare_parameter('target_z_max', 0.80)
+        # arm_x_max: where the TCP itself may go. Point A sits at
+        # target.x - dist_a and Point B at A + advance, so a target at 0.95
+        # puts B at 0.76 -- still inside this bound.
+        self.declare_parameter('arm_x_max', 0.80)
+        # A rejected detection repeats at the full detection rate, so an
+        # unreachable fruit used to spam ~18 warnings a second. Log the first
+        # one immediately, then at most one per period until a pose passes.
+        self.declare_parameter('limit_log_period_s', 5.0)
 
         self.planning_group = self.get_parameter('planning_group').get_parameter_value().string_value
         self.base_frame = self.get_parameter('base_frame').get_parameter_value().string_value
@@ -155,6 +180,14 @@ class ArmMotionPlannerNode(Node):
             self.get_parameter('payload_cog_mm').get_parameter_value().double_array_value
         ) or [0.0, 0.0, 48.0]
         self.auto_recover = self.get_parameter('auto_recover').get_parameter_value().bool_value
+        self.twist_collision_sensitivity = self.get_parameter(
+            'twist_collision_sensitivity').get_parameter_value().integer_value
+        self.normal_collision_sensitivity = self.get_parameter(
+            'normal_collision_sensitivity').get_parameter_value().integer_value
+        self.loaded_velocity_scale = self.get_parameter(
+            'loaded_velocity_scale').get_parameter_value().double_value
+        self.loaded_acceleration_scale = self.get_parameter(
+            'loaded_acceleration_scale').get_parameter_value().double_value
         self.auto_execute_interval = self.get_parameter('auto_execute_interval').get_parameter_value().double_value
         self.target_x_min = self.get_parameter('target_x_min').get_parameter_value().double_value
         self.target_x_max = self.get_parameter('target_x_max').get_parameter_value().double_value
@@ -162,6 +195,9 @@ class ArmMotionPlannerNode(Node):
         self.target_y_max = self.get_parameter('target_y_max').get_parameter_value().double_value
         self.target_z_min = self.get_parameter('target_z_min').get_parameter_value().double_value
         self.target_z_max = self.get_parameter('target_z_max').get_parameter_value().double_value
+        self.arm_x_max = self.get_parameter('arm_x_max').get_parameter_value().double_value
+        self.limit_log_period_s = self.get_parameter('limit_log_period_s').get_parameter_value().double_value
+        self._limit_reject_last_log = 0.0
 
         self._assert_single_instance()
 
@@ -197,6 +233,16 @@ class ArmMotionPlannerNode(Node):
             JointState, '/joint_states', self.joint_state_callback, 10,
             callback_group=self.callback_group
         )
+        # The driver reports err/state/mode here even under ros2_control. Reading
+        # it lets us tell a real controller fault from a planning failure, and
+        # lets us wait for the arm to actually be ready again after a recovery
+        # instead of firing the next trajectory into a still-faulted controller.
+        self.robot_state = None
+        self.robot_state_lock = threading.Lock()
+        self.robot_state_sub = self.create_subscription(
+            RobotMsg, '/xarm/robot_states', self.robot_state_callback, 10,
+            callback_group=self.callback_group
+        )
         if self.auto_execute:
             self.auto_timer = self.create_timer(
               self.auto_execute_interval, self._auto_execute_timer_callback, callback_group=self.callback_group
@@ -214,6 +260,8 @@ class ArmMotionPlannerNode(Node):
         self.set_mode_client = self.create_client(SetInt16, '/xarm/set_mode', callback_group=self.callback_group)
         self.set_state_client = self.create_client(SetInt16, '/xarm/set_state', callback_group=self.callback_group)
         self.set_load_client = self.create_client(SetTcpLoad, '/xarm/set_tcp_load', callback_group=self.callback_group)
+        self.set_collis_sens_client = self.create_client(
+            SetInt16, '/xarm/set_collision_sensitivity', callback_group=self.callback_group)
         self.list_ctrl_client = self.create_client(ListControllers, '/controller_manager/list_controllers', callback_group=self.callback_group)
         self.switch_ctrl_client = self.create_client(SwitchController, '/controller_manager/switch_controller', callback_group=self.callback_group)
         self.planning_scene_pub = self.create_publisher(PlanningScene, '/planning_scene', 10)
@@ -240,6 +288,17 @@ class ArmMotionPlannerNode(Node):
             f'抓取负载: {self.payload_kg:.2f} kg, 夹持稳定 {self.grip_settle_s:.1f}s, '
             f'自动恢复 {"开" if self.auto_recover else "关"}'
         )
+        self.get_logger().info(
+            f'碰撞灵敏度: 平时 {self.normal_collision_sensitivity} / '
+            f'拧转期 {self.twist_collision_sensitivity}'
+            f'{"(关闭)" if self.twist_collision_sensitivity == 0 else ""}; '
+            f'负载回程速度 {self.loaded_velocity_scale:.2f}/'
+            f'加速度 {self.loaded_acceleration_scale:.2f}'
+        )
+        self.get_logger().info(
+            f'限位: 果子 X[{self.target_x_min:.2f}, {self.target_x_max:.2f}] / '
+            f'TCP X≤{self.arm_x_max:.2f} (Point A = 目标X - 0.27m)'
+        )
         self.get_logger().info('Arm Motion Planner (Guarantee Advance) Ready.')
 
     def _assert_single_instance(self):
@@ -262,22 +321,33 @@ class ArmMotionPlannerNode(Node):
             )
             raise RuntimeError('duplicate arm_motion_planner_node')
 
-    def is_pose_within_target_limits(self, pose: Pose, label='Target') -> bool:
-        x_ok = self.target_x_min <= pose.position.x <= self.target_x_max
+    def is_pose_within_target_limits(self, pose: Pose, label='Target', x_max=None) -> bool:
+        """Plausibility box for a detected fruit.
+
+        Pass ``x_max=self.arm_x_max`` when validating a pose the TCP will
+        actually travel to (Point A / Point B); the default bound is the wider
+        fruit box, which deliberately extends past the arm's own reach.
+        """
+        x_max = self.target_x_max if x_max is None else x_max
+        x_ok = self.target_x_min <= pose.position.x <= x_max
         y_ok = self.target_y_min <= pose.position.y <= self.target_y_max
         z_ok = self.target_z_min <= pose.position.z <= self.target_z_max
 
         if x_ok and y_ok and z_ok:
+            self._limit_reject_last_log = 0.0
             return True
 
-        self.get_logger().warn(
-            f'{label} 超出限位: '
-            f'[{pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f}] '
-            f'not in '
-            f'X[{self.target_x_min:.3f}, {self.target_x_max:.3f}] '
-            f'Y[{self.target_y_min:.3f}, {self.target_y_max:.3f}] '
-            f'Z[{self.target_z_min:.3f}, {self.target_z_max:.3f}]'
-        )
+        now = time.time()
+        if now - self._limit_reject_last_log >= self.limit_log_period_s:
+            self._limit_reject_last_log = now
+            self.get_logger().warn(
+                f'{label} 超出限位: '
+                f'[{pose.position.x:.3f}, {pose.position.y:.3f}, {pose.position.z:.3f}] '
+                f'not in '
+                f'X[{self.target_x_min:.3f}, {x_max:.3f}] '
+                f'Y[{self.target_y_min:.3f}, {self.target_y_max:.3f}] '
+                f'Z[{self.target_z_min:.3f}, {self.target_z_max:.3f}]'
+            )
         return False
 
     def is_pose_reachable(self, pose: Pose, label='Pose') -> bool:
@@ -364,11 +434,69 @@ class ArmMotionPlannerNode(Node):
         request.center_of_gravity = [float(v) for v in self.payload_cog_mm]
         result = self._call_sync(self.set_load_client, request, 'set_tcp_load')
         if result is None:
+            # xarm_api only creates a service when services.<name> is true in
+            # its params. Upstream ships set_tcp_load as false, so the service
+            # simply does not exist unless the launch passes our
+            # xarm_extra_api_params.yaml as extra_robot_api_params_path.
+            self.get_logger().warn(
+                '   负载未申报：/xarm/set_tcp_load 不存在。'
+                '需用 extra_robot_api_params_path 打开该服务（见文档 14.9）。'
+            )
             return False
         if getattr(result, 'ret', -1) != 0:
             self.get_logger().warn(f'set_tcp_load 返回 ret={result.ret}')
             return False
         self.get_logger().info(f'   负载已设为 {weight_kg:.2f} kg')
+        return True
+
+    def robot_state_callback(self, msg: RobotMsg):
+        with self.robot_state_lock:
+            self.robot_state = msg
+
+    def get_robot_state(self):
+        with self.robot_state_lock:
+            return self.robot_state
+
+    def wait_until_arm_ready(self, timeout_s=6.0):
+        """Wait until the controller box is genuinely able to move again.
+
+        After clearing a fault the arm needs a moment to leave error state and
+        return to SERVO mode. Sending the next trajectory before that is what
+        turned one C31 into a chain of CONTROL_FAILED retries: the goal was
+        rejected simply because the arm had not finished coming back.
+
+        Returns True when err == 0, state <= 2 and mode == 1 (SERVO). If no
+        robot_states message ever arrives, returns True so the caller falls
+        back to its previous behaviour rather than blocking.
+        """
+        deadline = time.time() + timeout_s
+        seen = False
+        while time.time() < deadline:
+            state = self.get_robot_state()
+            if state is not None:
+                seen = True
+                if state.err == 0 and state.state <= 2 and state.mode == 1:
+                    return True
+            time.sleep(0.1)
+        return not seen
+
+    def set_collision_sensitivity(self, level):
+        """Set how eagerly the controller calls unexplained current a collision.
+
+        Twisting a stem off looks exactly like a collision from the controller's
+        side, so the check has to be relaxed for that one stage and put back
+        immediately afterwards.
+        """
+        request = SetInt16.Request()
+        request.data = int(level)
+        result = self._call_sync(self.set_collis_sens_client, request,
+                                 'set_collision_sensitivity')
+        if result is None:
+            return False
+        if getattr(result, 'ret', -1) != 0:
+            self.get_logger().warn(f'set_collision_sensitivity 返回 ret={result.ret}')
+            return False
+        self.get_logger().info(f'   碰撞灵敏度设为 {int(level)}')
         return True
 
     def is_controller_active(self, name='xarm6_traj_controller'):
@@ -420,6 +548,13 @@ class ArmMotionPlannerNode(Node):
 
         active = self.is_controller_active()
         if active:
+            # The controller being 'active' only means ros2_control accepted it
+            # again; the arm itself may still be in error state or out of SERVO
+            # mode. Pushing the next trajectory during that window is what made
+            # a single C31 look like several independent failures.
+            if not self.wait_until_arm_ready():
+                self.get_logger().warn('   控制器已激活，但机械臂仍未就绪，稍后重试。')
+                return False
             self.get_logger().info('   ✓ 已恢复：错误已清除，轨迹控制器重新激活')
             return True
         self.get_logger().error(
@@ -494,28 +629,37 @@ class ArmMotionPlannerNode(Node):
             f'±{math.degrees(reach):.0f}° × {self.twist_cycles} 轮'
         )
 
-        for cycle in range(self.twist_cycles):
-            for direction, tag in ((+1.0, '正转'), (-1.0, '反转')):
-                target = list(start)
-                target[5] = j6_start + direction * reach
-                if not self.move_joints(target):
-                    self.get_logger().warn(
-                        f'   第 {cycle + 1} 轮 {tag} 失败，停止拧转并继续退回。'
+        # Shearing a stem means deliberately pushing against an external
+        # constraint, which the controller reads as a collision (C31) and
+        # answers by deactivating the trajectory controller. Relax the check
+        # for the duration of the twist only, and restore it no matter how
+        # this method exits.
+        self.set_collision_sensitivity(self.twist_collision_sensitivity)
+        try:
+            for cycle in range(self.twist_cycles):
+                for direction, tag in ((+1.0, '正转'), (-1.0, '反转')):
+                    target = list(start)
+                    target[5] = j6_start + direction * reach
+                    if not self.move_joints(target, gentle=True):
+                        self.get_logger().warn(
+                            f'   第 {cycle + 1} 轮 {tag} 失败，停止拧转并继续退回。'
+                        )
+                        # Always try to restore the starting angle: leaving the
+                        # wrist twisted would make the retreat path unpredictable.
+                        self.move_joints(start, gentle=True)
+                        return False
+                    self.get_logger().info(
+                        f'   第 {cycle + 1}/{self.twist_cycles} 轮 {tag} '
+                        f'{direction * math.degrees(reach):+.0f}°'
                     )
-                    # Always try to restore the starting angle: leaving the
-                    # wrist twisted would make the retreat path unpredictable.
-                    self.move_joints(start)
-                    return False
-                self.get_logger().info(
-                    f'   第 {cycle + 1}/{self.twist_cycles} 轮 {tag} '
-                    f'{direction * math.degrees(reach):+.0f}°'
-                )
-                time.sleep(self.twist_settle_s)
+                    time.sleep(self.twist_settle_s)
 
-            if not self.move_joints(start):
-                self.get_logger().warn('   回中失败，停止拧转并继续退回。')
-                return False
-            time.sleep(self.twist_settle_s)
+                if not self.move_joints(start, gentle=True):
+                    self.get_logger().warn('   回中失败，停止拧转并继续退回。')
+                    return False
+                time.sleep(self.twist_settle_s)
+        finally:
+            self.set_collision_sensitivity(self.normal_collision_sensitivity)
 
         self.get_logger().info('   ✓ 拧转完成，joint6 已回到起始角')
         return True
@@ -602,27 +746,33 @@ class ArmMotionPlannerNode(Node):
             return p
         return None
 
-    def move_ptp(self, target_pose: Pose, strict_orientation=True) -> bool:
-        """点到点规划 (通用)。控制器故障时自动恢复并重试一次。"""
+    def move_ptp(self, target_pose: Pose, strict_orientation=True, gentle=False) -> bool:
+        """点到点规划 (通用)。控制器故障时自动恢复并重试一次。
+
+        gentle=True 用于负载在手的运动：降低速度与加速度上限，减少关节
+        电流尖峰，从源头避免 C31，而不是靠事后恢复补救。
+        """
         with self.motion_lock:
-            if self._move_ptp_locked(target_pose, strict_orientation):
+            if self._move_ptp_locked(target_pose, strict_orientation, gentle):
                 return True
             # A fault deactivates the controller, so every later goal fails
             # with the same error. Recover once, then retry.
             if self.is_controller_active() is False and self.recover_from_fault():
                 self.get_logger().info('   恢复后重试本次 PTP...')
-                return self._move_ptp_locked(target_pose, strict_orientation)
+                return self._move_ptp_locked(target_pose, strict_orientation, gentle)
             return False
 
-    def _move_ptp_locked(self, target_pose: Pose, strict_orientation=True) -> bool:
+    def _move_ptp_locked(self, target_pose: Pose, strict_orientation=True, gentle=False) -> bool:
         if not self.move_group_client.wait_for_server(2.0): return False
         goal = MoveGroup.Goal()
         goal.request = MotionPlanRequest()
         goal.request.group_name = self.planning_group
         goal.request.num_planning_attempts = 15
         goal.request.allowed_planning_time = 10.0 
-        goal.request.max_velocity_scaling_factor = 0.3
-        goal.request.max_acceleration_scaling_factor = 0.2
+        goal.request.max_velocity_scaling_factor = (
+            self.loaded_velocity_scale if gentle else 0.3)
+        goal.request.max_acceleration_scaling_factor = (
+            self.loaded_acceleration_scale if gentle else 0.2)
 
         constraints = Constraints()
         pos_con = PositionConstraint()
@@ -669,23 +819,25 @@ class ArmMotionPlannerNode(Node):
         mapping = { -1: "PLANNING_FAILED", -4: "CONTROL_FAILED", -10: "START_STATE_IN_COLLISION", -12: "GOAL_IN_COLLISION" }
         return mapping.get(val, f"Code {val}")
 
-    def move_joints(self, joints, allow_recover=True):
+    def move_joints(self, joints, allow_recover=True, gentle=False):
         with self.motion_lock:
-            if self._move_joints_locked(joints):
+            if self._move_joints_locked(joints, gentle):
                 return True
             if allow_recover and self.is_controller_active() is False \
                     and self.recover_from_fault():
                 self.get_logger().info('   恢复后重试本次关节运动...')
-                return self._move_joints_locked(joints)
+                return self._move_joints_locked(joints, gentle)
             return False
 
-    def _move_joints_locked(self, joints):
+    def _move_joints_locked(self, joints, gentle=False):
         if not self.move_group_client.wait_for_server(2.0): return False
         goal = MoveGroup.Goal()
         goal.request = MotionPlanRequest()
         goal.request.group_name = self.planning_group
-        goal.request.max_velocity_scaling_factor = 0.3
-        goal.request.max_acceleration_scaling_factor = 0.2
+        goal.request.max_velocity_scaling_factor = (
+            self.loaded_velocity_scale if gentle else 0.3)
+        goal.request.max_acceleration_scaling_factor = (
+            self.loaded_acceleration_scale if gentle else 0.2)
         
         constraints = Constraints()
         names = ['joint1','joint2','joint3','joint4','joint5','joint6']
@@ -749,10 +901,10 @@ class ArmMotionPlannerNode(Node):
             # 进了奇异区，控制器直接 CONTROL_FAILED 卡死。
             pose_b_planned = copy.deepcopy(pose_a)
             pose_b_planned.position.x += ADVANCE_GAP
-            if not self.is_pose_within_target_limits(pose_a, label='Point A'):
+            if not self.is_pose_within_target_limits(pose_a, label='Point A', x_max=self.arm_x_max):
                 self.get_logger().warn('Point A 超出限位，取消本次抓取。')
                 return
-            if not self.is_pose_within_target_limits(pose_b_planned, label='Point B'):
+            if not self.is_pose_within_target_limits(pose_b_planned, label='Point B', x_max=self.arm_x_max):
                 self.get_logger().warn('Point B 超出限位，取消本次抓取。')
                 return
             if not self.is_pose_reachable(pose_a, label='Point A'):
@@ -785,7 +937,7 @@ class ArmMotionPlannerNode(Node):
             # A 点的实际位姿会偏离规划值 (规划器为满足姿态约束而挑了别的解)，
             # 所以之前基于规划 A 算的 B 预检不足以代表真实 B，这里按实际
             # 落点再验一次，确认前进那一下不会撞进奇异区。
-            if not self.is_pose_within_target_limits(pose_b, label='Point B (actual)'):
+            if not self.is_pose_within_target_limits(pose_b, label='Point B (actual)', x_max=self.arm_x_max):
                 self.get_logger().error('实际 Point B 超出限位，中止前进。')
                 return
             if not self.is_pose_reachable(pose_b, label='Point B (actual)'):
@@ -825,20 +977,31 @@ class ArmMotionPlannerNode(Node):
             # 拧转失败不视为抓取失败：果子可能已经夹住，仍然继续退回。
             self.twist_off()
 
-            # STAGE 3: PTP 后退
-            self.get_logger().info(f'[STAGE 3] PTP 退回 Point A (X={current_pose_a.position.x:.3f})')
-            if not self.move_ptp(current_pose_a, strict_orientation=True):
+            # The twist leaves the wrist and the stem still loaded against each
+            # other. Give the arm a moment to settle and confirm the controller
+            # is genuinely ready before asking it to carry the fruit out, rather
+            # than starting the retreat into a controller that is still faulted.
+            time.sleep(self.twist_settle_s)
+            if not self.wait_until_arm_ready():
+                self.get_logger().warn('   机械臂未就绪，先尝试恢复再退回。')
+                self.recover_from_fault()
+
+            # STAGE 3: PTP 后退。带着果子走，速度与加速度都降下来。
+            self.get_logger().info(
+                f'[STAGE 3] PTP 退回 Point A (X={current_pose_a.position.x:.3f}) - 负载慢速'
+            )
+            if not self.move_ptp(current_pose_a, strict_orientation=True, gentle=True):
                 self.get_logger().warn('后退失败...')
 
             # STAGE 4: 回家
-            self.get_logger().info('[STAGE 4] 关节运动回家...')
+            self.get_logger().info('[STAGE 4] 关节运动回家 - 负载慢速...')
             # xArm6 "hold-up" named state from _xarm6_macro.srdf.xacro: only
             # joint5 is turned -90 deg. This points the OAK camera straight
             # ahead so it can look for the next object to pick.
             home_degrees = [0, 0, 0, 0, -90, 0]
             home = [np.radians(d) for d in home_degrees]
             
-            if not self.move_joints(home):
+            if not self.move_joints(home, gentle=True):
                 self.get_logger().warn('关节回家未成功。')
 
             self.get_logger().info('>>> 抓取完成')
@@ -851,6 +1014,14 @@ class ArmMotionPlannerNode(Node):
         except Exception as e:
             self.get_logger().error(f'执行异常: {e}')
         finally:
+            # Never leave collision detection relaxed. twist_off restores it on
+            # its own way out, but an exception anywhere after that point would
+            # otherwise leave the arm running with the check disabled, which is
+            # how a real crash goes unnoticed.
+            try:
+                self.set_collision_sensitivity(self.normal_collision_sensitivity)
+            except Exception as exc:
+                self.get_logger().warn(f'恢复碰撞灵敏度失败: {exc}')
             # Never leave the arm faulted: the next trigger would fail on an
             # inactive controller with no obvious reason why.
             try:
